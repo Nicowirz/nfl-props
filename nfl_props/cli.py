@@ -53,6 +53,7 @@ def cmd_predict(args):
     stats = _load(args)
     games = _upcoming_games(args)
     roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
+    roster_names = {p["player_id"]: p["full_name"] for _, p in roster.iterrows()}
     for stat in STATS:
         r = model.fit(stats, stat, halflife_days=args.halflife, reg=args.reg)
         cand = _roster_for_stat(roster, stat)
@@ -73,7 +74,7 @@ def cmd_predict(args):
                     rows.append({
                         "player": p["full_name"], "team": team, "opp": opp,
                         "mean": mean_yards(mu, sigma), "median": med,
-                        f"p_over_{line:g}": prob_over(mu, sigma, line),
+                        "line": line, "p_over": prob_over(mu, sigma, line),
                     })
         print(f"\n=== {stat} projections, week {args.week} ===")
         if not rows:
@@ -82,8 +83,11 @@ def cmd_predict(args):
         out = pd.DataFrame(rows).sort_values("mean", ascending=False)
         print(out.head(args.top).to_string(index=False, float_format=lambda v: f"{v:.1f}"))
         if r.prior_players:
-            names = ", ".join(r.player_name.get(p, p) for p in r.prior_players)
-            print(f"  no history: {names}")
+            names = [roster_names.get(p, p) for p in r.prior_players]
+            shown = ", ".join(names[:10])
+            if len(names) > 10:
+                shown += f" (+{len(names) - 10} more)"
+            print(f"  no history: {shown}")
 
 
 def _mu_sigma_for_legs(legs: list[Leg], stats: pd.DataFrame, roster: pd.DataFrame,

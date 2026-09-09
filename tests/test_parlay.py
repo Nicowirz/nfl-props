@@ -48,6 +48,25 @@ def test_build_parlays_excludes_contradictory_legs():
         assert len(keys) == len(pl.legs)
 
 
+def test_build_parlays_excludes_different_line_same_player_stat():
+    # Same player/stat at different lines (over 300 + under 200) are correlated/potentially
+    # mutually exclusive and must not be recommended together, even though Leg.key() (which
+    # requires an exact line match for devig grouping) treats them as distinct legs.
+    legs = [
+        Leg("Josh Allen", "pass_yds", "over", 300.0, 2.0),
+        Leg("Josh Allen", "pass_yds", "under", 200.0, 2.0),
+    ]
+    mu_sigma = {("Josh Allen", "pass_yds"): (5.6, 0.3)}
+    evals = evaluate_legs(legs, mu_sigma, market_weight=0.0)
+    parlays = build_parlays(evals, min_legs=2, max_legs=2, min_edge=-1.0)
+    # The only possible 2-leg combo is these two same-player/stat legs, so no parlay
+    # should survive at all -- and even if others existed, none may pair these two.
+    assert parlays == []
+    for pl in parlays:
+        player_stats = {(le.leg.player, le.leg.stat) for le in pl.legs}
+        assert len(player_stats) == len(pl.legs)
+
+
 def test_build_parlays_ranks_by_ev():
     legs = [Leg("Josh Allen", "pass_yds", "over", 200.0, 2.5),
             Leg("CMC", "rush_yds", "over", 40.0, 2.2)]

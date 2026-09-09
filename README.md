@@ -68,6 +68,11 @@ predicts. Lower NLL (negative log-likelihood) is better. Run with
 The model beats the naive baseline on all three stats: about 15% lower NLL on pass_yds, and
 roughly 9-10% lower on rush_yds and rec_yds. No NaNs or fit failures in this run.
 
+Note: the baseline is given the model's own fitted `sigma` for this comparison (not an
+independently estimated one), so this NLL gap measures whether knowing the opponent
+improves the *mean* projection, not whether either distribution's width is well
+calibrated — the calibration table below is what actually validates that.
+
 Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrated):
 
 ```
@@ -137,6 +142,12 @@ output as *your price minus the model's fair number*, not a proven inefficiency.
 - **Small per-season sample.** ~17 games/player/season converges slower than a sport with a
   longer season; ridge shrinkage leans harder on the league-average prior early each season,
   and a player with fewer than 4 qualifying games is flagged `low_sample` in `ratings` output.
+- **No starter/volume/depth-chart awareness.** Every active-status player is projected
+  as if he holds his typical full workload — the tool doesn't know a backup QB will
+  barely play behind a healthy starter (e.g. a real run projected backup Joe Flacco at
+  252.4 pass yards right alongside starter Joe Burrow's 262.4 in the same game). A
+  player's ability rating reflects what he did in HIS OWN past qualifying games, not his
+  current depth-chart role. Check depth charts yourself before trusting a projection.
 
 ## Model
 

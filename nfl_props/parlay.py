@@ -126,13 +126,18 @@ def build_parlays(evals: list[LegEval], min_legs: int = 2, max_legs: int = 4,
 
 
 def _contradictory(combo: Iterable[LegEval]) -> bool:
-    """Two legs of the same player/stat/line in one parlay (e.g. over 250.5 + under 250.5)."""
-    seen = set()
+    """Two legs of the same player/stat/line in one parlay (e.g. over 250.5 + under 250.5),
+    or two legs on the same player/stat at different lines -- correlated or potentially
+    mutually exclusive (e.g. over 300 + under 200 for the same player's yardage)."""
+    seen_keys = set()
+    seen_player_stat = set()
     for le in combo:
         k = le.leg.key()
-        if k in seen:
+        ps = (le.leg.player, le.leg.stat)
+        if k in seen_keys or ps in seen_player_stat:
             return True
-        seen.add(k)
+        seen_keys.add(k)
+        seen_player_stat.add(ps)
     return False
 
 
@@ -153,6 +158,8 @@ def legs_from_csv(path: str) -> list[Leg]:
             raise ValueError(f"unknown stat {row['stat']!r} (use pass_yds, rush_yds or rec_yds)")
         player = str(row["player"]).strip()
         line = float(row["line"])
+        if line <= 0:
+            raise ValueError(f"line must be positive, got {line!r} for player {player!r}")
         if "over_odds" in df.columns and pd.notna(row.get("over_odds")):
             legs.append(Leg(player, stat, "over", line, parse_odds(row["over_odds"])))
         if "under_odds" in df.columns and pd.notna(row.get("under_odds")):
