@@ -5,6 +5,7 @@ URLs verified live against github.com/nflverse/nflverse-data on 2026-09-09.
 from __future__ import annotations
 
 import time
+import urllib.error
 import urllib.request
 from datetime import date
 from pathlib import Path
@@ -56,9 +57,25 @@ def load_player_stats(seasons: int = 3, refresh: bool = False, today: date | Non
     frames = []
     for season in range(cur - seasons + 1, cur + 1):
         max_age = 6 if season == cur else 24 * 365 * 10  # finished seasons never change
-        raw = _fetch(STATS_URL.format(season=season), DATA_DIR / f"stats_player_week_{season}.csv",
-                     max_age, refresh)
-        frames.append(raw[[c for c in STATS_KEEP if c in raw.columns]].copy())
+        try:
+            raw = _fetch(STATS_URL.format(season=season), DATA_DIR / f"stats_player_week_{season}.csv",
+                         max_age, refresh)
+            frames.append(raw[[c for c in STATS_KEEP if c in raw.columns]].copy())
+        except urllib.error.HTTPError as e:
+            # Current season may not have stats yet (preseason or week 1 before games are played/published).
+            # Silently skip it and continue with historical seasons. A 404 on a historical season
+            # would re-raise on the next call since it's cached, so it still signals a real problem.
+            if season == cur and e.code == 404:
+                continue
+            raise
+
+    if not frames:
+        # No seasons had data available; return empty DataFrame with correct schema.
+        return pd.DataFrame(columns=["player_id", "player_name", "position", "position_group", "team",
+                                     "opponent_team", "season", "week", "season_type", "game_id",
+                                     "attempts", "passing_yards", "carries", "rushing_yards", "targets",
+                                     "receptions", "receiving_yards", "date", "home"])
+
     df = pd.concat(frames, ignore_index=True)
     df = df.rename(columns={"player_display_name": "player_name"})
     df = df.merge(games, on="game_id", how="left")
