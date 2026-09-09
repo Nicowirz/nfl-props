@@ -19,6 +19,16 @@ NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-s
 MIN_GROUP_RESIDUALS = 30  # fewer residuals than this in a position group -> fall back to sigma_global
 
 
+def _safe_log_yards(yards) -> np.ndarray:
+    """log(yards + OFFSET), with yards floored so the log argument never drops to zero
+    or below. A handful of real games have extreme negative yardage (a fumbled lateral,
+    a punter's fake-punt carry) that would otherwise NaN out and poison the whole ridge
+    fit; those are treated as equivalent to this floor rather than crashing.
+    """
+    raw = np.asarray(yards, dtype=float)
+    return np.log(np.maximum(raw, 1.0 - OFFSET) + OFFSET)
+
+
 @dataclass
 class Ratings:
     stat: str
@@ -66,7 +76,7 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
     tidx = {t: i for i, t in enumerate(teams)}
     n_p, n_t, n = len(players), len(teams), len(df)
 
-    y = np.log(df[STAT_COLUMN[stat]].to_numpy(dtype=float) + OFFSET)
+    y = _safe_log_yards(df[STAT_COLUMN[stat]].to_numpy(dtype=float))
     days_ago = (pd.Timestamp(as_of) - df["date"]).dt.days.to_numpy(dtype=float)
     w = 0.5 ** (days_ago / halflife_days)
 

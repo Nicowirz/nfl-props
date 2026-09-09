@@ -92,3 +92,14 @@ def test_table_sorted_by_ability():
     r = model.fit(df, "rec_yds", min_games=50)
     t = r.table()
     assert list(t["ability"]) == sorted(t["ability"], reverse=True)
+
+
+def test_fit_handles_extreme_negative_yardage_without_nan():
+    df, players, teams, ability, defense, intercept, home_field, sigma = _synthetic()
+    bad_row = df.iloc[[0]].copy()
+    bad_row["receiving_yards"] = -13.0  # a real NFL outlier (fumbled lateral / trick play)
+    df = pd.concat([df, bad_row], ignore_index=True)
+    r = model.fit(df, "rec_yds", min_games=50)
+    assert np.isfinite(r.intercept)
+    assert all(np.isfinite(v) for v in r.ability.values())
+    assert all(np.isfinite(v) for v in r.defense.values())

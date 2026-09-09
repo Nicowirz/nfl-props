@@ -34,7 +34,7 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
         if g["season"] != last_season:
             season_totals = {}
             last_season = g["season"]
-        y = float(np.log(g[model.STAT_COLUMN[stat]] + model.OFFSET))
+        y = float(model._safe_log_yards(g[model.STAT_COLUMN[stat]]))
         if g["date"] >= pd.Timestamp(start):
             week_key = (g["season"], g["week"])
             if week_key != fit_week:
