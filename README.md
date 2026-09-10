@@ -198,6 +198,7 @@ a player-prop leg can't be combined into one parlay ticket yet.
 | `game-predict --week N` | moneyline/spread/total fair probabilities for that week's games |
 | `game-bets --week N [--odds file.csv]` | edge vs. the real reference line built into `games.csv`, no CSV required to start; `--odds` overrides with your own prices |
 | `game-backtest` | walk-forward evaluation vs. a naive baseline (home-field-only for margin, league-average for totals) |
+| `best-bet --week N [--odds file.csv]` | the single highest-edge pick in each market: one game bet (from the real reference line) and, if `--odds` is given, one player prop |
 
 ### The reference line, and its sign convention
 

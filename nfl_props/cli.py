@@ -316,6 +316,49 @@ def cmd_game_backtest(args):
     print(game_backtest.calibration(total_preds, "actual_total").to_string(float_format=lambda v: f"{v:.3f}"))
 
 
+def cmd_best_bet(args):
+    games, upcoming = _upcoming_completed_games(args)
+
+    # Game market: single highest-edge leg against the real games.csv reference line.
+    mr = game_model.fit_margin(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    sr = game_model.fit_score(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    game_legs = [lg for _, g in upcoming.iterrows() for lg in _feed_game_legs(g)]
+    distributions = {}
+    for _, g in upcoming.iterrows():
+        margin_mu, margin_sigma = game_model.predicted_margin(mr, g["home_team"], g["away_team"],
+                                                              neutral=bool(g["neutral"]))
+        total_mu, total_sigma = game_model.predicted_total(sr, g["home_team"], g["away_team"])
+        distributions[(g["home_team"], g["away_team"])] = (margin_mu, margin_sigma, total_mu, total_sigma)
+    game_evals = evaluate_game_legs(game_legs, distributions, market_weight=args.market_weight) if game_legs else []
+
+    print(f"=== Best bet of the week (season {args.season}, week {args.week}) ===\n")
+    print("Game market:")
+    if game_evals:
+        best_game = max(game_evals, key=lambda e: e.edge)
+        print(f"  {best_game.leg.label}")
+        print(f"  odds {best_game.leg.odds:.2f} ({to_american(best_game.leg.odds)})  "
+              f"model {best_game.p_model:6.1%}  edge {best_game.edge:+.1%}  EV {best_game.ev:+.1%}")
+    else:
+        print("  no legs available (games.csv had no odds for this week).")
+
+    # Player prop: single highest-edge leg from a user-supplied odds CSV. Skipped when
+    # --odds is omitted, since (unlike games) there's no free feed to rank props against.
+    print("\nPlayer prop:")
+    if not args.odds:
+        print("  skipped -- pass --odds file.csv to include player props "
+              "(no free odds feed exists for props, unlike games).")
+    else:
+        stats = _load(args)
+        roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
+        prop_legs = legs_from_csv(args.odds)
+        mu_sigma = _mu_sigma_for_legs(prop_legs, stats, roster, upcoming, args)
+        prop_evals = evaluate_legs(prop_legs, mu_sigma, market_weight=args.market_weight)
+        best_prop = max(prop_evals, key=lambda e: e.edge)
+        print(f"  {best_prop.leg.label}")
+        print(f"  odds {best_prop.leg.odds:.2f} ({to_american(best_prop.leg.odds)})  "
+              f"model {best_prop.p_model:6.1%}  edge {best_prop.edge:+.1%}  EV {best_prop.ev:+.1%}")
+
+
 def main(argv=None):
     # Shared as a parent parser (not just added to `p`) so these options are accepted
     # both before AND after the subcommand, e.g. both `--week 2 predict` and
@@ -384,6 +427,12 @@ def main(argv=None):
     gbt.add_argument("--start", help="YYYY-MM-DD; default = start of the last --test-seasons seasons")
     gbt.add_argument("--test-seasons", type=int, default=1)
     gbt.set_defaults(fn=cmd_game_backtest)
+
+    bb = sub.add_parser("best-bet", parents=[common],
+                        help="single highest-edge pick, one per market (game + player prop)")
+    bb.add_argument("--odds", help="CSV: player,stat,line,over_odds,under_odds (player props; omit to skip props)")
+    bb.add_argument("--market-weight", type=float, default=DEFAULTS["market_weight"])
+    bb.set_defaults(fn=cmd_best_bet)
 
     args = p.parse_args(argv)
     args.fn(args)
