@@ -6,14 +6,17 @@ import sys
 
 import pandas as pd
 
-from . import backtest, data, model
-from .markets import mean_yards, median_yards, prob_over, to_american
-from .parlay import Leg, build_parlays, evaluate_legs, legs_from_csv
+from . import backtest, data, game_backtest, game_model, model
+from .game_markets import moneyline_prob
+from .markets import fair_odds, mean_yards, median_yards, parse_odds, prob_over, to_american
+from .parlay import (GameLeg, Leg, build_game_parlays, build_parlays, evaluate_game_legs,
+                     evaluate_legs, game_legs_from_csv, legs_from_csv)
 
 STATS = ("pass_yds", "rush_yds", "rec_yds")
 POSITION_GROUPS = {"pass_yds": {"QB"}, "rush_yds": {"RB", "FB", "QB"}, "rec_yds": {"WR", "TE", "RB"}}
 
-DEFAULTS = {"seasons": 3, "halflife": 180.0, "reg": 5.0, "market_weight": 0.5}
+DEFAULTS = {"seasons": 3, "halflife": 180.0, "reg": 5.0, "market_weight": 0.5,
+           "game_halflife": 365.0, "game_reg": 3.0}
 
 
 def _load(args) -> pd.DataFrame:
@@ -163,6 +166,139 @@ def cmd_backtest(args):
         print(backtest.calibration(preds).to_string(float_format=lambda v: f"{v:.3f}"))
 
 
+def cmd_game_ratings(args):
+    games = data.load_games(refresh=args.refresh)
+    mr = game_model.fit_margin(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    sr = game_model.fit_score(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    print(f"\n=== margin power ratings (as of {mr.as_of}, {mr.n_games} games, "
+          f"home field {mr.home_field:+.2f}) ===")
+    print(mr.table().head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
+    print(f"\n=== scoring/allowed ratings (as of {sr.as_of}, {sr.n_games} games) ===")
+    print(sr.table().head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
+
+
+def _upcoming_completed_games(args) -> pd.DataFrame:
+    games = data.load_games(refresh=args.refresh)
+    upcoming = games[(games["season"] == args.season) & (games["week"] == args.week)]
+    if upcoming.empty:
+        sys.exit(f"no scheduled games for season {args.season} week {args.week}")
+    return games, upcoming
+
+
+def cmd_game_predict(args):
+    games, upcoming = _upcoming_completed_games(args)
+    mr = game_model.fit_margin(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    sr = game_model.fit_score(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    print(f"\n=== game predictions, week {args.week} ===")
+    for _, g in upcoming.iterrows():
+        margin_mu, margin_sigma = game_model.predicted_margin(mr, g["home_team"], g["away_team"])
+        total_mu, total_sigma = game_model.predicted_total(sr, g["home_team"], g["away_team"])
+        p_home = moneyline_prob(margin_mu, margin_sigma)
+        print(f"\n{g['away_team']} @ {g['home_team']}")
+        print(f"  moneyline: {g['home_team']} {p_home:5.1%} ({to_american(fair_odds(p_home))})  "
+              f"{g['away_team']} {1 - p_home:5.1%} ({to_american(fair_odds(1 - p_home))})")
+        print(f"  margin: {g['home_team']} by {margin_mu:+.1f} (sigma {margin_sigma:.1f})")
+        print(f"  total: {total_mu:.1f} (sigma {total_sigma:.1f})")
+    if mr.prior_teams or sr.prior_teams:
+        names = sorted(set(mr.prior_teams) | set(sr.prior_teams))
+        print(f"\nno history: {', '.join(names)}")
+
+
+def _feed_game_legs(g: pd.Series) -> list[GameLeg]:
+    legs = []
+    if pd.notna(g.get("home_moneyline")):
+        legs.append(GameLeg(g["home_team"], g["away_team"], "moneyline", "home", None,
+                            parse_odds(g["home_moneyline"])))
+    if pd.notna(g.get("away_moneyline")):
+        legs.append(GameLeg(g["home_team"], g["away_team"], "moneyline", "away", None,
+                            parse_odds(g["away_moneyline"])))
+    if pd.notna(g.get("spread_line")) and pd.notna(g.get("home_spread_odds")):
+        legs.append(GameLeg(g["home_team"], g["away_team"], "spread", "home", float(g["spread_line"]),
+                            parse_odds(g["home_spread_odds"])))
+    if pd.notna(g.get("spread_line")) and pd.notna(g.get("away_spread_odds")):
+        legs.append(GameLeg(g["home_team"], g["away_team"], "spread", "away", float(g["spread_line"]),
+                            parse_odds(g["away_spread_odds"])))
+    if pd.notna(g.get("total_line")) and pd.notna(g.get("over_odds")):
+        legs.append(GameLeg(g["home_team"], g["away_team"], "total", "over", float(g["total_line"]),
+                            parse_odds(g["over_odds"])))
+    if pd.notna(g.get("total_line")) and pd.notna(g.get("under_odds")):
+        legs.append(GameLeg(g["home_team"], g["away_team"], "total", "under", float(g["total_line"]),
+                            parse_odds(g["under_odds"])))
+    return legs
+
+
+def cmd_game_bets(args):
+    games, upcoming = _upcoming_completed_games(args)
+    mr = game_model.fit_margin(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    sr = game_model.fit_score(games, halflife_days=args.game_halflife, reg=args.game_reg)
+
+    legs = [] if args.no_feed_odds else [lg for _, g in upcoming.iterrows() for lg in _feed_game_legs(g)]
+    if args.odds:
+        user = game_legs_from_csv(args.odds)
+        user_keys = {lg.key() for lg in user}
+        legs = [lg for lg in legs if lg.key() not in user_keys] + user
+    if not legs:
+        sys.exit("no legs: the feed had no odds and no --odds file was given")
+
+    distributions = {}
+    for _, g in upcoming.iterrows():
+        margin_mu, margin_sigma = game_model.predicted_margin(mr, g["home_team"], g["away_team"])
+        total_mu, total_sigma = game_model.predicted_total(sr, g["home_team"], g["away_team"])
+        distributions[(g["home_team"], g["away_team"])] = (margin_mu, margin_sigma, total_mu, total_sigma)
+
+    evals = evaluate_game_legs(legs, distributions, market_weight=args.market_weight)
+    evals.sort(key=lambda e: -e.edge)
+    print(f"Market weight {args.market_weight:.2f}\n")
+    print(f"{'leg':40} {'odds':>6} {'amer':>6} {'p':>6} {'model':>6} {'book':>6} {'edge':>7}")
+    for e in evals:
+        book = f"{e.p_book:6.1%}" if e.p_book is not None else "   n/a"
+        flag = "" if e.devig_exact else " *"
+        print(f"{e.leg.label:40} {e.leg.odds:6.2f} {to_american(e.leg.odds):>6} {e.p:6.1%} "
+              f"{e.p_model:6.1%} {book} {e.edge:+7.1%}{flag}")
+    if any(not e.devig_exact for e in evals):
+        print("  * other side not supplied; book prob approximated with a 5% margin")
+
+    parlays = build_game_parlays(evals, min_legs=args.min_legs, max_legs=args.max_legs,
+                                 max_candidates=args.candidates, min_edge=args.min_edge, top=args.top)
+    print(f"\nTop parlays ({args.min_legs}-{args.max_legs} legs, edge > {args.min_edge:.1%}):")
+    if not parlays:
+        print("  none: no leg clears the edge threshold. Try --min-edge 0.")
+        return
+    print(f"{'#':>2} {'odds':>8} {'amer':>7} {'p':>6} {'EV':>7} {'kelly':>6}  legs")
+    for i, pl in enumerate(parlays, 1):
+        print(f"{i:2d} {pl.odds:8.2f} {to_american(pl.odds):>7} {pl.prob:6.1%} {pl.ev:+7.1%} "
+              f"{pl.kelly:6.1%}  {pl.label}")
+    print("\nNo named provider for the feed's reference line (see README) -- treat as a "
+          "consensus/reference price, not proven beatable.")
+
+
+def cmd_game_backtest(args):
+    games = data.load_games(refresh=args.refresh)
+    completed = games.dropna(subset=["home_score", "away_score"])
+    if args.start:
+        start = pd.Timestamp(args.start).date()
+    else:
+        start = (completed["gameday"].max() - pd.Timedelta(days=365 * args.test_seasons)).date()
+
+    margin_preds = game_backtest.walk_forward_margin(games, start, halflife_days=args.game_halflife,
+                                                      reg=args.game_reg)
+    s = game_backtest.summarize(margin_preds, "actual_margin")
+    print(f"\n=== margin: {s['n']} predictions from {start} ===")
+    print(f"NLL model {s['nll_model']:.4f} vs baseline (home-field-only) {s['nll_baseline']:.4f} "
+          f"(lower is better)")
+    print("Calibration:")
+    print(game_backtest.calibration(margin_preds, "actual_margin").to_string(float_format=lambda v: f"{v:.3f}"))
+
+    total_preds = game_backtest.walk_forward_total(games, start, halflife_days=args.game_halflife,
+                                                    reg=args.game_reg)
+    s = game_backtest.summarize(total_preds, "actual_total")
+    print(f"\n=== totals: {s['n']} predictions from {start} ===")
+    print(f"NLL model {s['nll_model']:.4f} vs baseline (league-average) {s['nll_baseline']:.4f} "
+          f"(lower is better)")
+    print("Calibration:")
+    print(game_backtest.calibration(total_preds, "actual_total").to_string(float_format=lambda v: f"{v:.3f}"))
+
+
 def main(argv=None):
     # Shared as a parent parser (not just added to `p`) so these options are accepted
     # both before AND after the subcommand, e.g. both `--week 2 predict` and
@@ -175,6 +311,10 @@ def main(argv=None):
     common.add_argument("--refresh", action="store_true", help="re-download data")
     common.add_argument("--season", type=int, default=data.current_season_start(), help="NFL season year")
     common.add_argument("--week", type=int, default=1, help="week number within --season")
+    common.add_argument("--game-halflife", type=float, default=DEFAULTS["game_halflife"],
+                        help="time-decay half-life in days for the game-outcome models")
+    common.add_argument("--game-reg", type=float, default=DEFAULTS["game_reg"],
+                        help="ridge shrinkage on team power/scoring/allowed ratings")
 
     p = argparse.ArgumentParser(prog="nfl_props", description="NFL yardage-props model", parents=[common])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -204,6 +344,29 @@ def main(argv=None):
     bt.add_argument("--start", help="YYYY-MM-DD; default = start of the last --test-seasons seasons")
     bt.add_argument("--test-seasons", type=int, default=1)
     bt.set_defaults(fn=cmd_backtest)
+
+    gr = sub.add_parser("game-ratings", parents=[common], help="team power + scoring/allowed ratings")
+    gr.add_argument("--top", type=int, default=32)
+    gr.set_defaults(fn=cmd_game_ratings)
+
+    gp = sub.add_parser("game-predict", parents=[common], help="moneyline/spread/total fair probabilities for --week")
+    gp.set_defaults(fn=cmd_game_predict)
+
+    gb = sub.add_parser("game-bets", parents=[common], help="edge vs. the real reference line, plus ranked parlays")
+    gb.add_argument("--odds", help="CSV: home_team,away_team,market,selection,line,odds")
+    gb.add_argument("--no-feed-odds", action="store_true", help="ignore games.csv's built-in reference line")
+    gb.add_argument("--market-weight", type=float, default=DEFAULTS["market_weight"])
+    gb.add_argument("--min-legs", type=int, default=2)
+    gb.add_argument("--max-legs", type=int, default=4)
+    gb.add_argument("--min-edge", type=float, default=0.02)
+    gb.add_argument("--candidates", type=int, default=12)
+    gb.add_argument("--top", type=int, default=15)
+    gb.set_defaults(fn=cmd_game_bets)
+
+    gbt = sub.add_parser("game-backtest", parents=[common], help="walk-forward evaluation for margin and totals")
+    gbt.add_argument("--start", help="YYYY-MM-DD; default = start of the last --test-seasons seasons")
+    gbt.add_argument("--test-seasons", type=int, default=1)
+    gbt.set_defaults(fn=cmd_game_backtest)
 
     args = p.parse_args(argv)
     args.fn(args)
