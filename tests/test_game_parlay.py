@@ -55,6 +55,17 @@ def test_build_game_parlays_excludes_same_game_same_market():
         assert len(games) == len(pl.legs)
 
 
+def test_spread_label_shows_favorite_with_minus_sign():
+    home_favored = GameLeg("PHI", "WAS", "spread", "home", 5.5, 1.91)
+    assert "-5.5" in home_favored.label
+    away_leg_same_line = GameLeg("PHI", "WAS", "spread", "away", 5.5, 1.91)
+    assert "+5.5" in away_leg_same_line.label
+    away_favored = GameLeg("NYG", "DAL", "spread", "home", -3.0, 1.91)
+    assert "+3" in away_favored.label  # home is the +3 underdog
+    away_favored_pick = GameLeg("NYG", "DAL", "spread", "away", -3.0, 1.91)
+    assert "-3" in away_favored_pick.label  # away is the -3 favorite
+
+
 def test_game_legs_from_csv(tmp_path):
     p = tmp_path / "game_odds.csv"
     p.write_text("home_team,away_team,market,selection,line,odds\n"

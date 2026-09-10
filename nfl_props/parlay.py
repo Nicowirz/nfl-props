@@ -194,8 +194,13 @@ class GameLeg:
             pick = self.home_team if self.selection == "home" else self.away_team
             return f"{matchup}: {pick} ML"
         if self.market == "spread":
+            # self.line is nflverse's home-perspective convention (positive = home
+            # favored). Standard bettor notation shows the FAVORITE with a minus sign,
+            # so the home side's displayed number is the negation of self.line while
+            # the away side's is self.line unchanged.
             pick = self.home_team if self.selection == "home" else self.away_team
-            return f"{matchup}: {pick} {self.line:+g}"
+            value = -self.line if self.selection == "home" else self.line
+            return f"{matchup}: {pick} {value:+g}"
         return f"{matchup}: {self.selection} {self.line}"
 
     def key(self) -> tuple:
@@ -309,11 +314,13 @@ def build_game_parlays(evals: list[GameLegEval], min_legs: int = 2, max_legs: in
 
 
 def _game_contradictory(combo: Iterable[GameLegEval]) -> bool:
-    """Two legs on the same game and market (e.g. home ML + away ML, or two spread picks
-    on the same game) are contradictory or redundant -- excluded from one parlay."""
+    """Two legs on the same game (any market) are excluded from one parlay -- moneyline,
+    spread, and total outcomes for one game are all correlated with each other (e.g. a
+    moneyline pick is a near-subset of that team covering a positive spread), not
+    independent."""
     seen = set()
     for le in combo:
-        k = (le.leg.home_team, le.leg.away_team, le.leg.market)
+        k = (le.leg.home_team, le.leg.away_team)
         if k in seen:
             return True
         seen.add(k)

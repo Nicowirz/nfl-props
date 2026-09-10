@@ -38,7 +38,8 @@ def walk_forward_margin(games: pd.DataFrame, start: date, halflife_days: float =
                 ratings = game_model.fit_margin(games, as_of=g["gameday"].date(),
                                                 halflife_days=halflife_days, reg=reg, min_games=min_games)
                 fit_week = week_key
-            mu, sigma = game_model.predicted_margin(ratings, g["home_team"], g["away_team"])
+            mu, sigma = game_model.predicted_margin(ratings, g["home_team"], g["away_team"],
+                                                    neutral=bool(g["neutral"]))
             base_mu = float(np.mean(league_margins)) if league_margins else ratings.home_field
             base_sigma = ratings.sigma
             rows.append({

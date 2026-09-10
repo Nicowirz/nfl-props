@@ -288,6 +288,11 @@ Same honesty caveat as the player-props backtest: the reference line has no name
 provider, so this validates model *calibration*, not proven edge over a real sportsbook's
 closing line.
 
+Note: the baseline is scored using the model's own fitted sigma (not an independently
+estimated one), so the reported NLL gap overstates the model's advantage somewhat — it
+measures whether knowing team identity improves the *mean* projection, not a clean
+apples-to-apples comparison of two independently-tuned distributions.
+
 ### Known limitations (game outcomes)
 
 - **Odds source has no named provider.** Treat `games.csv`'s lines as reference/consensus,
@@ -298,3 +303,10 @@ closing line.
 - **No starter/depth-chart awareness** carries over conceptually here too: a team missing
   its starting QB isn't reflected in its power rating until enough post-injury games
   accumulate to shift the recency-weighted fit.
+- **Pushes aren't modeled.** Both markets use a continuous probability distribution, so
+  an exact push (final margin/total lands precisely on the line) is assigned zero
+  probability, even though real lines are frequently exact integers (~55.6% of
+  spread lines) and real push rates on common numbers like a 3-point margin are
+  non-trivial (~8.1% of games finish with an exact 3-point margin; ~4.8% with an exact
+  7-point margin). This modestly inflates the favored side's computed probability on
+  integer lines — treat edges on exact-integer lines with extra skepticism.

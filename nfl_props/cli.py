@@ -170,11 +170,18 @@ def cmd_game_ratings(args):
     games = data.load_games(refresh=args.refresh)
     mr = game_model.fit_margin(games, halflife_days=args.game_halflife, reg=args.game_reg)
     sr = game_model.fit_score(games, halflife_days=args.game_halflife, reg=args.game_reg)
+    current_season = games["season"].max()
+    current_teams = (set(games.loc[games["season"] == current_season, "home_team"])
+                     | set(games.loc[games["season"] == current_season, "away_team"]))
     print(f"\n=== margin power ratings (as of {mr.as_of}, {mr.n_games} games, "
           f"home field {mr.home_field:+.2f}) ===")
-    print(mr.table().head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
+    m_table = mr.table()
+    m_table = m_table[m_table["team"].isin(current_teams)]
+    print(m_table.head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
     print(f"\n=== scoring/allowed ratings (as of {sr.as_of}, {sr.n_games} games) ===")
-    print(sr.table().head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
+    s_table = sr.table()
+    s_table = s_table[s_table["team"].isin(current_teams)]
+    print(s_table.head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
 
 
 def _upcoming_completed_games(args) -> pd.DataFrame:
@@ -191,7 +198,8 @@ def cmd_game_predict(args):
     sr = game_model.fit_score(games, halflife_days=args.game_halflife, reg=args.game_reg)
     print(f"\n=== game predictions, week {args.week} ===")
     for _, g in upcoming.iterrows():
-        margin_mu, margin_sigma = game_model.predicted_margin(mr, g["home_team"], g["away_team"])
+        margin_mu, margin_sigma = game_model.predicted_margin(mr, g["home_team"], g["away_team"],
+                                                              neutral=bool(g["neutral"]))
         total_mu, total_sigma = game_model.predicted_total(sr, g["home_team"], g["away_team"])
         p_home = moneyline_prob(margin_mu, margin_sigma)
         print(f"\n{g['away_team']} @ {g['home_team']}")
@@ -242,9 +250,16 @@ def cmd_game_bets(args):
 
     distributions = {}
     for _, g in upcoming.iterrows():
-        margin_mu, margin_sigma = game_model.predicted_margin(mr, g["home_team"], g["away_team"])
+        margin_mu, margin_sigma = game_model.predicted_margin(mr, g["home_team"], g["away_team"],
+                                                              neutral=bool(g["neutral"]))
         total_mu, total_sigma = game_model.predicted_total(sr, g["home_team"], g["away_team"])
         distributions[(g["home_team"], g["away_team"])] = (margin_mu, margin_sigma, total_mu, total_sigma)
+
+    for lg in legs:
+        if (lg.home_team, lg.away_team) not in distributions:
+            valid = ", ".join(f"{h} vs {a}" for h, a in distributions) or "(none)"
+            sys.exit(f"no scheduled game found for {lg.home_team} vs {lg.away_team} in "
+                     f"season {args.season} week {args.week}. Valid games: {valid}")
 
     evals = evaluate_game_legs(legs, distributions, market_weight=args.market_weight)
     evals.sort(key=lambda e: -e.edge)
@@ -270,6 +285,8 @@ def cmd_game_bets(args):
               f"{pl.kelly:6.1%}  {pl.label}")
     print("\nNo named provider for the feed's reference line (see README) -- treat as a "
           "consensus/reference price, not proven beatable.")
+    print("Legs from the same game are excluded from parlays entirely (moneyline, spread, "
+          "and total outcomes for one game are correlated, not independent).")
 
 
 def cmd_game_backtest(args):

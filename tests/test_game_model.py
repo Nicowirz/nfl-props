@@ -75,6 +75,14 @@ def test_predicted_margin_unknown_team_flagged():
     assert "NEWTEAM" in r.prior_teams
 
 
+def test_predicted_margin_neutral_excludes_home_field():
+    df, teams, power, home_field, sigma = _synthetic_games(rounds=48, seed=0)
+    r = game_model.fit_margin(df, reg=0.05, halflife_days=100_000, min_games=20)
+    mu_home, _ = game_model.predicted_margin(r, teams[0], teams[1], neutral=False)
+    mu_neutral, _ = game_model.predicted_margin(r, teams[0], teams[1], neutral=True)
+    assert mu_home - mu_neutral == pytest.approx(r.home_field)
+
+
 def test_table_sorted_by_power():
     df, *_ = _synthetic_games()
     r = game_model.fit_margin(df, reg=0.1, min_games=20)

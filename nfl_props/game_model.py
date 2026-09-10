@@ -90,10 +90,13 @@ def fit_margin(games: pd.DataFrame, as_of: date | None = None, halflife_days: fl
                          sigma=sigma, as_of=as_of, n_games=n, game_counts=game_counts)
 
 
-def predicted_margin(r: MarginRatings, home_team: str, away_team: str) -> tuple[float, float]:
+def predicted_margin(r: MarginRatings, home_team: str, away_team: str,
+                     neutral: bool = False) -> tuple[float, float]:
     """(mu, sigma) of (home_score - away_score). Unknown teams get power 0.0 (league
     average) and are flagged in `r.prior_teams`, same treatment model.py gives an
-    unfitted player.
+    unfitted player. `neutral=True` excludes home-field advantage, for games played at a
+    neutral site (Super Bowl, international games) even though a "home" team is still
+    nominally designated.
     """
     home_power = r.power.get(home_team)
     if home_power is None:
@@ -105,7 +108,7 @@ def predicted_margin(r: MarginRatings, home_team: str, away_team: str) -> tuple[
         away_power = 0.0
         if away_team not in r.prior_teams:
             r.prior_teams.append(away_team)
-    mu = r.intercept + r.home_field + home_power - away_power
+    mu = r.intercept + (0.0 if neutral else r.home_field) + home_power - away_power
     return mu, r.sigma
 
 
