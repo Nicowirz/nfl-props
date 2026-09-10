@@ -179,3 +179,122 @@ nfl_props/backtest.py   walk-forward evaluation, calibration
 nfl_props/cli.py        commands
 tests/                  pytest
 ```
+
+## Game outcomes (moneyline / spread / totals)
+
+A team-level companion to the player-props model above: a margin model (single power
+rating per team) for moneyline and spread, and a score model (scoring-rate + allowed-rate
+per team) for totals. Both are weighted ridge regressions using the same fitting mechanics
+as the player-yardage model, just at team level.
+
+**Kept separate from the player-props `parlay` command in this version** — a game leg and
+a player-prop leg can't be combined into one parlay ticket yet.
+
+### Commands
+
+| command | what it does |
+|---|---|
+| `game-ratings` | team power ratings (margin) + scoring/allowed ratings (totals) |
+| `game-predict --week N` | moneyline/spread/total fair probabilities for that week's games |
+| `game-bets --week N [--odds file.csv]` | edge vs. the real reference line built into `games.csv`, no CSV required to start; `--odds` overrides with your own prices |
+| `game-backtest` | walk-forward evaluation vs. a naive baseline (home-field-only for margin, league-average for totals) |
+
+### The reference line, and its sign convention
+
+`games.csv` (from nflverse) already carries a real `spread_line`/`total_line`/moneyline
+for every game. **This is not attributed to a specific sportsbook in nflverse's own data
+dictionary** — treat it as a reference/consensus price, not a proven-beatable line the way
+`epl-parlay`'s labeled Bet365 feed is.
+
+**`spread_line`'s sign convention is the opposite of common bettor intuition**: a
+*positive* number means the home team is favored by that many points (a negative number
+means the away team is favored). This tool's `spread` market follows that same convention
+throughout — the home team covers iff `home_score - away_score > spread_line`.
+
+### Odds file (for `game-bets --odds`)
+
+```
+home_team,away_team,market,selection,line,odds
+SEA,NE,moneyline,home,,+150
+SEA,NE,moneyline,away,,-180
+SEA,NE,spread,home,3.0,-110
+SEA,NE,spread,away,3.0,-110
+SEA,NE,total,over,44.5,-110
+SEA,NE,total,under,44.5,-110
+```
+
+- `market`: `moneyline` (or `ml`), `spread` (or `ats`), `total` (or `totals`/`ou`/`o/u`)
+- `selection`: `home`/`away` for moneyline and spread, `over`/`under` for total
+- `line`: blank for moneyline; the spread line (home-perspective, same sign convention as
+  above) for spread; the total line for total
+- odds: decimal or American, same parsing as the player-props odds file
+
+### What the game backtest says
+
+Walk-forward over the last completed season, refit weekly, the model never sees the game
+it predicts. Run with `.venv\Scripts\python -m nfl_props game-backtest --test-seasons 1`
+on 2026-09-10:
+
+| market | model NLL | baseline NLL | baseline |
+|---|---|---|---|
+| margin | 4.0209 (270 predictions, from 2025-09-09) | 4.0980 | home-field-only |
+| totals | 4.0093 (270 predictions, from 2025-09-09) | 4.0582 | league-average |
+
+The model beats the naive baseline on both markets, but by a much smaller margin than the
+player-props model above: about 1.9% lower NLL on margin, and about 1.2% lower NLL on
+totals. No NaNs or fit failures in this run.
+
+Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrated):
+
+```
+=== margin: 270 predictions from 2025-09-09 ===
+                n  mean_pit
+(-0.001, 0.1]  33     0.054
+(0.1, 0.2]     24     0.150
+(0.2, 0.3]     32     0.259
+(0.3, 0.4]     28     0.345
+(0.4, 0.5]     22     0.456
+(0.5, 0.6]     31     0.538
+(0.6, 0.7]     23     0.660
+(0.7, 0.8]     24     0.751
+(0.8, 0.9]     19     0.841
+(0.9, 1.0]     34     0.955
+
+=== totals: 270 predictions from 2025-09-09 ===
+                n  mean_pit
+(-0.001, 0.1]  25     0.050
+(0.1, 0.2]     29     0.141
+(0.2, 0.3]     24     0.261
+(0.3, 0.4]     29     0.356
+(0.4, 0.5]     25     0.463
+(0.5, 0.6]     30     0.550
+(0.6, 0.7]     24     0.645
+(0.7, 0.8]     25     0.751
+(0.8, 0.9]     27     0.856
+(0.9, 1.0]     32     0.952
+```
+
+Bucket counts as a share of the 270 predictions: totals is close to uniform (8.9%-11.9% per
+bucket against a 10% target: 25, 29, 24, 29, 25, 30, 24, 25, 27, 32). margin is less even —
+the bottom bucket runs a bit hot (33/270 = 12.2%) and the top bucket does too (34/270 =
+12.6%), while the 0.8-0.9 bucket runs cold (19/270 = 7.0%), suggesting the margin model's
+predictive distribution is a little too narrow in the tails on this one-season sample.
+Neither market is badly miscalibrated, but with only 270 predictions from a single season,
+both the NLL gap and the calibration read here should be treated as a first look rather
+than a settled result — worth re-checking once more seasons of walk-forward data are
+available, and before leaning on the margin model's tails.
+
+Same honesty caveat as the player-props backtest: the reference line has no named
+provider, so this validates model *calibration*, not proven edge over a real sportsbook's
+closing line.
+
+### Known limitations (game outcomes)
+
+- **Odds source has no named provider.** Treat `games.csv`'s lines as reference/consensus,
+  not necessarily beatable.
+- **No injury/lineup awareness**, same as the player-props model.
+- **Single power rating for margin** means the model can't separately say "great offense,
+  bad defense" — only the net effect on margin is identifiable from margin data alone.
+- **No starter/depth-chart awareness** carries over conceptually here too: a team missing
+  its starting QB isn't reflected in its power rating until enough post-injury games
+  accumulate to shift the recency-weighted fit.
