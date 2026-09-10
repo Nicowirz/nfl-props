@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from nfl_props import game_model
 
@@ -79,3 +80,59 @@ def test_table_sorted_by_power():
     r = game_model.fit_margin(df, reg=0.1, min_games=20)
     t = r.table()
     assert list(t["power"]) == sorted(t["power"], reverse=True)
+
+
+def _synthetic_scores(n_teams=16, rounds=4, seed=0):
+    """Simulate each team-side's own score from a known scoring_rate/allowed_rate per team."""
+    rng = np.random.default_rng(seed)
+    teams = [f"T{i}" for i in range(n_teams)]
+    scoring = dict(zip(teams, rng.normal(0, 4.0, n_teams)))
+    allowed = dict(zip(teams, rng.normal(0, 4.0, n_teams)))
+    intercept, sigma = 22.0, 9.5
+    rows = []
+    d = pd.Timestamp("2024-09-01")
+    for _ in range(rounds):
+        order = list(rng.permutation(teams))
+        for i in range(0, n_teams - 1, 2):
+            home, away = order[i], order[i + 1]
+            home_mu = intercept + scoring[home] + allowed[away]
+            away_mu = intercept + scoring[away] + allowed[home]
+            home_score = max(0.0, rng.normal(home_mu, sigma))
+            away_score = max(0.0, rng.normal(away_mu, sigma))
+            rows.append({
+                "game_id": f"g{len(rows)}", "season": 2024, "game_type": "REG", "week": 1,
+                "gameday": d, "home_team": home, "away_team": away,
+                "home_score": home_score, "away_score": away_score, "neutral": False,
+            })
+            d += pd.Timedelta(days=1)
+    return pd.DataFrame(rows), teams, scoring, allowed, intercept, sigma
+
+
+def test_fit_score_recovers_scoring_and_allowed():
+    df, teams, scoring, allowed, intercept, sigma = _synthetic_scores(rounds=60, seed=0)
+    r = game_model.fit_score(df, reg=0.1, halflife_days=100_000, min_games=20)
+    est_scoring = np.array([r.scoring[t] for t in teams])
+    true_scoring = np.array([scoring[t] for t in teams])
+    est_allowed = np.array([r.allowed[t] for t in teams])
+    true_allowed = np.array([allowed[t] for t in teams])
+    assert np.corrcoef(true_scoring, est_scoring)[0, 1] > 0.85
+    assert np.corrcoef(true_allowed, est_allowed)[0, 1] > 0.85
+
+
+def test_predicted_total_matches_sum_of_scores():
+    df, teams, *_ = _synthetic_scores()
+    r = game_model.fit_score(df, reg=0.1, min_games=20)
+    home, away = teams[0], teams[1]
+    home_mu, home_sigma = game_model.predicted_score(r, home, away)
+    away_mu, away_sigma = game_model.predicted_score(r, away, home)
+    total_mu, total_sigma = game_model.predicted_total(r, home, away)
+    assert total_mu == pytest.approx(home_mu + away_mu)
+    assert total_sigma == pytest.approx(np.sqrt(home_sigma ** 2 + away_sigma ** 2))
+
+
+def test_predicted_score_unknown_team_flagged():
+    df, teams, *_ = _synthetic_scores()
+    r = game_model.fit_score(df, reg=0.1, min_games=20)
+    mu, sigma = game_model.predicted_score(r, "NEWTEAM", teams[0])
+    assert np.isfinite(mu) and sigma > 0
+    assert "NEWTEAM" in r.prior_teams

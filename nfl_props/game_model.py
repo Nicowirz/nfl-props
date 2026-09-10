@@ -107,3 +107,113 @@ def predicted_margin(r: MarginRatings, home_team: str, away_team: str) -> tuple[
             r.prior_teams.append(away_team)
     mu = r.intercept + r.home_field + home_power - away_power
     return mu, r.sigma
+
+
+TOTAL_REG = 3.0
+MIN_TOTAL_GAMES = 100
+
+
+@dataclass
+class ScoreRatings:
+    teams: list[str]
+    scoring: dict[str, float]
+    allowed: dict[str, float]
+    intercept: float
+    sigma: float
+    as_of: date
+    n_games: int
+    game_counts: dict[str, int]
+    prior_teams: list[str] = field(default_factory=list)
+
+    def table(self) -> pd.DataFrame:
+        rows = [{
+            "team": t, "scoring": self.scoring[t], "allowed": self.allowed[t],
+            "games": self.game_counts.get(t, 0),
+        } for t in self.teams]
+        return pd.DataFrame(rows).sort_values("scoring", ascending=False).reset_index(drop=True)
+
+
+def fit_score(games: pd.DataFrame, as_of: date | None = None, halflife_days: float = 365.0,
+             reg: float = TOTAL_REG, min_games: int = MIN_TOTAL_GAMES) -> ScoreRatings:
+    """Fit each team's scoring_rate (own points) and allowed_rate (opponent's points against
+    them). One row per team-side: each game contributes the home team's own score AND the
+    away team's own score as two separate observations, exactly like model.py's player-game
+    rows -- this is what makes scoring_rate and allowed_rate separately identifiable (see
+    the design note on this task).
+    """
+    df = games.dropna(subset=["home_score", "away_score"]).copy()
+    if as_of is not None:
+        df = df[df["gameday"] < pd.Timestamp(as_of)]
+    home_rows = pd.DataFrame({
+        "team": df["home_team"], "opponent": df["away_team"], "score": df["home_score"],
+        "gameday": df["gameday"],
+    })
+    away_rows = pd.DataFrame({
+        "team": df["away_team"], "opponent": df["home_team"], "score": df["away_score"],
+        "gameday": df["gameday"],
+    })
+    long = pd.concat([home_rows, away_rows], ignore_index=True)
+    if len(df) < min_games:
+        raise ValueError(f"need at least {min_games} completed games to fit totals, have {len(df)}")
+    as_of = as_of or long["gameday"].max().date()
+
+    teams = sorted(long["team"].unique())
+    tidx = {t: i for i, t in enumerate(teams)}
+    n_t, n = len(teams), len(long)
+
+    y = long["score"].to_numpy(dtype=float)
+    days_ago = (pd.Timestamp(as_of) - long["gameday"]).dt.days.to_numpy(dtype=float)
+    w = 0.5 ** (days_ago / halflife_days)
+
+    # design matrix columns: [intercept, scoring_rate(n_t), allowed_rate(n_t)]
+    X = np.zeros((n, 1 + 2 * n_t))
+    X[:, 0] = 1.0
+    si = long["team"].map(tidx).to_numpy()
+    oi = long["opponent"].map(tidx).to_numpy()
+    X[np.arange(n), 1 + si] = 1.0
+    X[np.arange(n), 1 + n_t + oi] = 1.0
+
+    penalty = np.zeros(X.shape[1])
+    penalty[1:] = reg
+    XtWX = X.T @ (X * w[:, None])
+    XtWy = X.T @ (y * w)
+    b = np.linalg.solve(XtWX + np.diag(penalty), XtWy)
+
+    intercept = float(b[0])
+    scoring = {t: float(b[1 + i]) for t, i in tidx.items()}
+    allowed = {t: float(b[1 + n_t + i]) for t, i in tidx.items()}
+
+    resid = y - X @ b
+    sigma = float(np.sqrt(np.average(resid ** 2, weights=w)))
+    game_counts = long["team"].value_counts().to_dict()
+
+    return ScoreRatings(teams=teams, scoring=scoring, allowed=allowed, intercept=intercept,
+                        sigma=sigma, as_of=as_of, n_games=n // 2, game_counts=game_counts)
+
+
+def predicted_score(r: ScoreRatings, team: str, opponent: str) -> tuple[float, float]:
+    """(mu, sigma) of `team`'s own score in a game against `opponent`. Unknown teams get
+    scoring_rate/allowed_rate 0.0 (league average) and are flagged in `r.prior_teams`.
+    """
+    scoring = r.scoring.get(team)
+    if scoring is None:
+        scoring = 0.0
+        if team not in r.prior_teams:
+            r.prior_teams.append(team)
+    allowed = r.allowed.get(opponent)
+    if allowed is None:
+        allowed = 0.0
+        if opponent not in r.prior_teams:
+            r.prior_teams.append(opponent)
+    mu = r.intercept + scoring + allowed
+    return mu, r.sigma
+
+
+def predicted_total(r: ScoreRatings, home_team: str, away_team: str) -> tuple[float, float]:
+    """(mu, sigma) of (home_score + away_score), assuming the two teams' scores are
+    independent given both teams' fitted ratings."""
+    home_mu, home_sigma = predicted_score(r, home_team, away_team)
+    away_mu, away_sigma = predicted_score(r, away_team, home_team)
+    mu = home_mu + away_mu
+    sigma = float(np.sqrt(home_sigma ** 2 + away_sigma ** 2))
+    return mu, sigma
