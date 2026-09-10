@@ -167,3 +167,184 @@ def legs_from_csv(path: str) -> list[Leg]:
     if not legs:
         raise ValueError("odds file had no usable over_odds/under_odds values")
     return legs
+
+
+from .game_markets import prob_margin_over, prob_total_over
+
+GAME_MARKET_WORDS = {
+    "moneyline": "moneyline", "ml": "moneyline",
+    "spread": "spread", "ats": "spread",
+    "total": "total", "totals": "total", "ou": "total", "o/u": "total",
+}
+
+
+@dataclass(frozen=True)
+class GameLeg:
+    home_team: str
+    away_team: str
+    market: str         # 'moneyline' | 'spread' | 'total'
+    selection: str       # 'home' | 'away' (moneyline/spread) | 'over' | 'under' (total)
+    line: float | None    # None for moneyline; the spread_line or total_line otherwise
+    odds: float           # decimal
+
+    @property
+    def label(self) -> str:
+        matchup = f"{self.away_team} @ {self.home_team}"
+        if self.market == "moneyline":
+            pick = self.home_team if self.selection == "home" else self.away_team
+            return f"{matchup}: {pick} ML"
+        if self.market == "spread":
+            pick = self.home_team if self.selection == "home" else self.away_team
+            return f"{matchup}: {pick} {self.line:+g}"
+        return f"{matchup}: {self.selection} {self.line}"
+
+    def key(self) -> tuple:
+        return (self.home_team, self.away_team, self.market, self.line)
+
+
+@dataclass
+class GameLegEval:
+    leg: GameLeg
+    p_model: float
+    p_book: float | None
+    p: float
+    devig_exact: bool
+
+    @property
+    def implied(self) -> float:
+        return 1.0 / self.leg.odds
+
+    @property
+    def edge(self) -> float:
+        return self.p - self.implied
+
+    @property
+    def ev(self) -> float:
+        return self.p * self.leg.odds - 1
+
+
+@dataclass
+class GameParlay:
+    legs: tuple[GameLegEval, ...]
+    prob: float
+    odds: float
+
+    @property
+    def ev(self) -> float:
+        return self.prob * self.odds - 1
+
+    @property
+    def kelly(self) -> float:
+        return max(0.0, (self.prob * self.odds - 1) / (self.odds - 1))
+
+    @property
+    def label(self) -> str:
+        return " + ".join(le.leg.label for le in self.legs)
+
+
+def game_leg_model_prob(leg: GameLeg, margin_mu: float, margin_sigma: float,
+                        total_mu: float, total_sigma: float) -> float:
+    """P(this leg's selection wins) under the fitted margin/total distributions.
+
+    spread_line and moneyline use nflverse's convention: positive means the HOME team is
+    favored by that many points (margin = home_score - away_score). Home covers/wins iff
+    margin > line (line = 0.0 for moneyline).
+    """
+    if leg.market in ("moneyline", "spread"):
+        line = 0.0 if leg.market == "moneyline" else leg.line
+        p_home = prob_margin_over(margin_mu, margin_sigma, line)
+        return p_home if leg.selection == "home" else 1 - p_home
+    p_over = prob_total_over(total_mu, total_sigma, leg.line)
+    return p_over if leg.selection == "over" else 1 - p_over
+
+
+def evaluate_game_legs(legs: Iterable[GameLeg],
+                       distributions: dict[tuple[str, str], tuple[float, float, float, float]],
+                       market_weight: float = 0.0) -> list[GameLegEval]:
+    """Model probability, devigged book probability, and the blend for each leg.
+
+    `distributions` maps (home_team, away_team) -> (margin_mu, margin_sigma, total_mu,
+    total_sigma), precomputed by the caller -- this module never imports game_model.py
+    directly, same decoupling as evaluate_legs/model.py.
+    """
+    legs = list(legs)
+    by_key: dict[tuple, dict[str, float]] = {}
+    for lg in legs:
+        by_key.setdefault(lg.key(), {})[lg.selection] = lg.odds
+    out = []
+    for lg in legs:
+        margin_mu, margin_sigma, total_mu, total_sigma = distributions[(lg.home_team, lg.away_team)]
+        p_model = game_leg_model_prob(lg, margin_mu, margin_sigma, total_mu, total_sigma)
+        book = by_key[lg.key()]
+        sides = ("home", "away") if lg.market in ("moneyline", "spread") else ("over", "under")
+        if sides[0] in book and sides[1] in book:
+            p0, p1 = devig([book[sides[0]], book[sides[1]]])
+            p_book = p0 if lg.selection == sides[0] else p1
+            exact = True
+        else:
+            p_book, exact = (1.0 / lg.odds) / ASSUMED_OVERROUND, False
+        p = (1 - market_weight) * p_model + market_weight * p_book
+        out.append(GameLegEval(lg, p_model, p_book if exact else None, p, exact))
+    return out
+
+
+def build_game_parlays(evals: list[GameLegEval], min_legs: int = 2, max_legs: int = 4,
+                       max_candidates: int = 12, min_edge: float = 0.0, top: int = 20) -> list[GameParlay]:
+    """Enumerate parlays from the best-edge legs and rank them by expected value."""
+    cands = sorted((le for le in evals if le.edge > min_edge), key=lambda le: -le.edge)
+    cands = cands[:max_candidates]
+    parlays: list[GameParlay] = []
+    for k in range(min_legs, max_legs + 1):
+        for combo in combinations(cands, k):
+            if _game_contradictory(combo):
+                continue
+            p = 1.0
+            odds = 1.0
+            for le in combo:
+                p *= le.p
+                odds *= le.leg.odds
+            parlays.append(GameParlay(tuple(combo), p, odds))
+    parlays.sort(key=lambda pl: -pl.ev)
+    return parlays[:top]
+
+
+def _game_contradictory(combo: Iterable[GameLegEval]) -> bool:
+    """Two legs on the same game and market (e.g. home ML + away ML, or two spread picks
+    on the same game) are contradictory or redundant -- excluded from one parlay."""
+    seen = set()
+    for le in combo:
+        k = (le.leg.home_team, le.leg.away_team, le.leg.market)
+        if k in seen:
+            return True
+        seen.add(k)
+    return False
+
+
+def game_legs_from_csv(path: str) -> list[GameLeg]:
+    """Read a user's odds file: home_team,away_team,market,selection,line,odds."""
+    import pandas as pd
+
+    from .markets import parse_odds
+
+    df = pd.read_csv(path, dtype={"odds": str})
+    missing = {"home_team", "away_team", "market", "selection", "odds"} - set(df.columns)
+    if missing:
+        raise ValueError(f"odds file is missing columns: {sorted(missing)}")
+    legs: list[GameLeg] = []
+    for _, row in df.iterrows():
+        market = GAME_MARKET_WORDS.get(str(row["market"]).strip().lower())
+        if market is None:
+            raise ValueError(f"unknown market {row['market']!r} (use moneyline, spread or total)")
+        sel = str(row["selection"]).strip().lower()
+        if market in ("moneyline", "spread"):
+            if sel not in ("home", "away"):
+                raise ValueError(f"selection {row['selection']!r} must be home or away for {market}")
+        else:
+            if sel not in ("over", "under"):
+                raise ValueError(f"selection {row['selection']!r} must be over or under for total")
+        line = float(row["line"]) if "line" in df.columns and pd.notna(row.get("line")) else None
+        if market != "moneyline" and line is None:
+            raise ValueError(f"{market} leg needs a line: {row.to_dict()}")
+        legs.append(GameLeg(str(row["home_team"]).strip(), str(row["away_team"]).strip(),
+                            market, sel, line, parse_odds(row["odds"])))
+    return legs
