@@ -42,11 +42,23 @@ def _fetch(url: str, cache: Path, max_age_hours: float, refresh: bool) -> pd.Dat
 
 
 def load_games(refresh: bool = False) -> pd.DataFrame:
-    """All scheduled/completed NFL games, past and future, one row per game."""
+    """All scheduled/completed NFL games, past and future, one row per game.
+
+    spread_line: positive = home team favored, negative = away team favored -- nflverse's
+    own convention, the OPPOSITE of the usual "-7 means favored" bettor intuition. Handle
+    this explicitly everywhere it's read; never assume the typical sign.
+
+    neutral: True for a game played at a neutral site (Super Bowl, international games),
+    per nflverse's own data dictionary ("location" is "Home" or "Neutral") -- home-field
+    advantage doesn't apply even though a "home" team is still designated for such games.
+    """
     raw = _fetch(GAMES_URL, DATA_DIR / "games.csv", max_age_hours=6, refresh=refresh)
     out = raw[["game_id", "season", "game_type", "week", "gameday", "home_team", "away_team",
-               "home_score", "away_score"]].copy()
+               "home_score", "away_score", "spread_line", "total_line",
+               "home_moneyline", "away_moneyline", "home_spread_odds", "away_spread_odds",
+               "under_odds", "over_odds"]].copy()
     out["gameday"] = pd.to_datetime(out["gameday"], errors="coerce")
+    out["neutral"] = raw["location"] != "Home"
     return out
 
 
