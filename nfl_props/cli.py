@@ -6,7 +6,7 @@ import sys
 
 import pandas as pd
 
-from . import backtest, data, game_backtest, game_model, model
+from . import backtest, data, game_backtest, game_model, kalshi, model
 from .game_markets import moneyline_prob
 from .markets import fair_odds, mean_yards, median_yards, parse_odds, prob_over, to_american
 from .parlay import (GameLeg, Leg, build_game_parlays, build_parlays, evaluate_game_legs,
@@ -117,11 +117,24 @@ def _mu_sigma_for_legs(legs: list[Leg], stats: pd.DataFrame, roster: pd.DataFram
     return out
 
 
+def _feed_prop_legs(games: pd.DataFrame, roster: pd.DataFrame, args) -> list[Leg]:
+    legs, skipped = kalshi.fetch_prop_legs(games, roster, refresh=args.refresh)
+    matched = len({lg.player for lg in legs})
+    print(f"Kalshi: {matched} props matched, {skipped} skipped (no roster match)\n")
+    return legs
+
+
 def cmd_parlay(args):
     stats = _load(args)
     games = _upcoming_games(args)
     roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
-    legs = legs_from_csv(args.odds)
+    legs = [] if args.no_feed_odds else _feed_prop_legs(games, roster, args)
+    if args.odds:
+        user = legs_from_csv(args.odds)
+        user_keys = {lg.key() for lg in user}
+        legs = [lg for lg in legs if lg.key() not in user_keys] + user
+    if not legs:
+        sys.exit("no legs: the Kalshi feed had no odds and no --odds file was given")
     mu_sigma = _mu_sigma_for_legs(legs, stats, roster, games, args)
     evals = evaluate_legs(legs, mu_sigma, market_weight=args.market_weight)
     evals.sort(key=lambda e: -e.edge)
@@ -341,16 +354,20 @@ def cmd_best_bet(args):
     else:
         print("  no legs available (games.csv had no odds for this week).")
 
-    # Player prop: single highest-edge leg from a user-supplied odds CSV. Skipped when
-    # --odds is omitted, since (unlike games) there's no free feed to rank props against.
+    # Player prop: single highest-edge leg, from Kalshi's live feed by default (or
+    # --odds, which overrides/supplements it; --no-feed-odds disables the feed).
     print("\nPlayer prop:")
-    if not args.odds:
-        print("  skipped -- pass --odds file.csv to include player props "
-              "(no free odds feed exists for props, unlike games).")
+    stats = _load(args)
+    roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
+    prop_legs = [] if args.no_feed_odds else _feed_prop_legs(upcoming, roster, args)
+    if args.odds:
+        user = legs_from_csv(args.odds)
+        user_keys = {lg.key() for lg in user}
+        prop_legs = [lg for lg in prop_legs if lg.key() not in user_keys] + user
+    if not prop_legs:
+        print("  no player props available -- the Kalshi feed had none for this week "
+              "(pass --odds file.csv to supply your own).")
     else:
-        stats = _load(args)
-        roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
-        prop_legs = legs_from_csv(args.odds)
         mu_sigma = _mu_sigma_for_legs(prop_legs, stats, roster, upcoming, args)
         prop_evals = evaluate_legs(prop_legs, mu_sigma, market_weight=args.market_weight)
         best_prop = max(prop_evals, key=lambda e: e.edge)
@@ -390,8 +407,9 @@ def main(argv=None):
     pr.add_argument("--line-step", type=float, default=5.0)
     pr.set_defaults(fn=cmd_predict)
 
-    pl = sub.add_parser("parlay", parents=[common], help="rank legs from --odds and build parlays")
-    pl.add_argument("--odds", required=True, help="CSV: player,stat,line,over_odds,under_odds")
+    pl = sub.add_parser("parlay", parents=[common], help="rank legs from Kalshi's live feed and build parlays")
+    pl.add_argument("--odds", help="CSV: player,stat,line,over_odds,under_odds (overrides/supplements the Kalshi feed)")
+    pl.add_argument("--no-feed-odds", action="store_true", help="ignore Kalshi's live prop feed")
     pl.add_argument("--market-weight", type=float, default=DEFAULTS["market_weight"])
     pl.add_argument("--min-legs", type=int, default=2)
     pl.add_argument("--max-legs", type=int, default=4)
@@ -430,7 +448,8 @@ def main(argv=None):
 
     bb = sub.add_parser("best-bet", parents=[common],
                         help="single highest-edge pick, one per market (game + player prop)")
-    bb.add_argument("--odds", help="CSV: player,stat,line,over_odds,under_odds (player props; omit to skip props)")
+    bb.add_argument("--odds", help="CSV: player,stat,line,over_odds,under_odds (overrides/supplements the Kalshi feed)")
+    bb.add_argument("--no-feed-odds", action="store_true", help="ignore Kalshi's live prop feed")
     bb.add_argument("--market-weight", type=float, default=DEFAULTS["market_weight"])
     bb.set_defaults(fn=cmd_best_bet)
 

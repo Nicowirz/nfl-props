@@ -30,17 +30,35 @@ All commands: `.venv\Scripts\python -m nfl_props <command>`.
 | `update` | force re-download of stats, schedules, rosters |
 | `ratings` | player ability + opponent defense ratings per stat category |
 | `predict --week N` | projected yardage distribution for that week's matchups |
-| `parlay --odds file.csv` | rank legs by edge against your prices, build ranked parlays |
+| `parlay [--odds file.csv]` | rank legs by edge against live Kalshi prices (no file needed to start), build ranked parlays; `--odds` overrides/supplements the feed, `--no-feed-odds` disables it |
 | `backtest` | walk-forward evaluation: log-likelihood and calibration vs. a naive baseline |
 
 ### Typical week
 
 ```
 .venv\Scripts\python -m nfl_props --season 2026 --week 3 predict --top 10
-.venv\Scripts\python -m nfl_props --season 2026 --week 3 parlay --odds my_odds.csv
+.venv\Scripts\python -m nfl_props --season 2026 --week 3 parlay
 ```
 
-### Odds file
+### Player prop odds: Kalshi feed (default) or your own CSV
+
+`parlay` and `best-bet` price player props against
+[Kalshi](https://kalshi.com)'s live, real-money markets for NFL passing/rushing/receiving
+yardage by default -- no `--odds` file needed to get started, the same way `game-bets`
+already gets a free reference line from `games.csv`. Kalshi's read (market-data) endpoints
+need no API key; this project only ever reads prices, it never places an order.
+
+- Prints a one-line match summary before the table, e.g.
+  `Kalshi: 174 props matched, 176 skipped (no roster match)` -- an unmatched Kalshi player
+  name is skipped, not a hard failure, since the feed pulls in many players automatically.
+- `--no-feed-odds` ignores the live feed entirely.
+- `--odds file.csv` still works: it overrides any feed leg sharing the same
+  player/stat/line and adds anything the feed doesn't have.
+- Real-time only -- not wired into `backtest`, which needs historical closing lines.
+- Some Kalshi contracts are thin (wide bid/ask spreads on far-out-of-the-money lines);
+  treat those edges with extra skepticism, the tool doesn't filter them out.
+
+### Odds file (`--odds`, optional -- overrides/supplements the Kalshi feed)
 
 ```
 player,stat,line,over_odds,under_odds
@@ -124,18 +142,19 @@ under-confident about the very highest passing-yardage games relative to what ac
 happened. None of the three are badly miscalibrated, but pass_yds is worth revisiting with
 more seasons of data before leaning on it hard at the tails.
 
-There is **no free historical player-prop odds feed**, so this backtest validates model
+The Kalshi feed (see above) is **live-only, not historical**, so this backtest validates model
 *calibration* against actual outcomes and a naive opponent-blind baseline — it does not (and
-cannot, without your own historical prices) prove the model beats a real sportsbook's closing
-line the way `epl-parlay`'s backtest can against Bet365. Treat a reported "edge" in `parlay`
-output as *your price minus the model's fair number*, not a proven inefficiency.
+cannot, without recorded historical prices) prove the model beats Kalshi's closing price the
+way `epl-parlay`'s backtest can against Bet365. Treat a reported "edge" in `parlay`
+output as *the feed's price minus the model's fair number*, not a proven inefficiency.
 
 ## Known limitations
 
 - **No injury/inactive-list awareness.** `predict`/`parlay` filter to roster `status == "ACT"`
   as of the roster snapshot for that week, which is not the same as the gameday-inactive list
   (published ~90 minutes before kickoff). Check inactives yourself before betting.
-- **No historical prop-line data.** See the backtest section above.
+- **Kalshi is real-time only.** See the backtest section above -- historical closing prices
+  aren't available the same way, so the live feed isn't wired into `backtest`.
 - **Legs are independent.** Two legs from the same game (e.g. a QB's pass yards and his WR1's
   receiving yards) are priced as if uncorrelated, even though game script correlates them in
   reality. Not modeled in this version.
