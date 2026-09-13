@@ -18,19 +18,20 @@ EPS = 1e-6
 
 def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: float = 180.0,
                  reg: float = 5.0, min_games: int = 200) -> pd.DataFrame:
-    """Predict every qualifying game on/after `start`, refitting whenever the (season, week)
-    of the game under test changes. Iterates ALL qualifying games chronologically (not just
-    the test window) so the season-to-date baseline has true prior-season history, not just
-    history accumulated since `start`.
+    """Predict every relevant-position game on/after `start` (not just games that clear
+    QUALIFY_MIN -- see model.fit's docstring for why; scoring on the same population the
+    model is now fit on keeps this a fair, consistent comparison), refitting whenever the
+    (season, week) of the game under test changes. Iterates ALL relevant-position games
+    chronologically (not just the test window) so the season-to-date baseline has true
+    prior-season history, not just history accumulated since `start`.
     """
-    qcol, qmin = model.QUALIFY_COLUMN[stat], model.QUALIFY_MIN[stat]
-    qualifying = stats[stats[qcol] >= qmin].sort_values("date")
+    relevant = stats[stats["position_group"].isin(model.RELEVANT_POSITIONS[stat])].sort_values("date")
     rows = []
     ratings = None
     fit_week = None
     season_totals: dict[str, list[float]] = {}
     last_season = None
-    for _, g in qualifying.iterrows():
+    for _, g in relevant.iterrows():
         if g["season"] != last_season:
             season_totals = {}
             last_season = g["season"]
@@ -44,7 +45,8 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
             mu, sigma = model.predicted_distribution(ratings, g["player_id"], g["position_group"],
                                                       g["opponent_team"], bool(g["home"]))
             prior = season_totals.get(g["player_id"], [])
-            base_mu = float(np.mean(prior)) if prior else ratings.intercept
+            base_mu = (float(np.mean(prior)) if prior
+                      else ratings.position_intercept.get(g["position_group"], ratings.intercept_fallback))
             base_sigma = ratings.sigma.get(g["position_group"], ratings.sigma_global)
             rows.append({
                 "date": g["date"], "player_id": g["player_id"], "position_group": g["position_group"],

@@ -36,7 +36,7 @@ def cmd_ratings(args):
     stats = _load(args)
     for stat in STATS:
         r = model.fit(stats, stat, halflife_days=args.halflife, reg=args.reg)
-        print(f"\n=== {stat} (as of {r.as_of}, {r.n_games} qualifying games) ===")
+        print(f"\n=== {stat} (as of {r.as_of}, {r.n_games} games) ===")
         print(r.table().head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
 
 
