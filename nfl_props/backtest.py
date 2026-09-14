@@ -40,6 +40,8 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
     """
     if pace_adjust and games is None:
         raise ValueError("pace_adjust=True requires games (e.g. data.load_games())")
+    if stat in model.SHARE_STATS and "game_id" in stats.columns:
+        stats = model.add_trailing_share(stats, stat, halflife_days=halflife_days)
     relevant = stats[stats["position_group"].isin(model.RELEVANT_POSITIONS[stat])].sort_values("date")
     rows = []
     ratings = None
@@ -63,7 +65,8 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
                                                           reg=game_reg, min_games=game_min_games)
                 fit_week = week_key
             mu, sigma = model.predicted_distribution(ratings, g["player_id"], g["position_group"],
-                                                      g["opponent_team"], bool(g["home"]))
+                                                      g["opponent_team"], bool(g["home"]),
+                                                      trailing_share=g.get("trailing_share"))
             if pace_adjust:
                 home_team = g["team"] if g["home"] else g["opponent_team"]
                 away_team = g["opponent_team"] if g["home"] else g["team"]
