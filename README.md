@@ -148,6 +148,25 @@ cannot, without recorded historical prices) prove the model beats Kalshi's closi
 way `epl-parlay`'s backtest can against Bet365. Treat a reported "edge" in `parlay`
 output as *the feed's price minus the model's fair number*, not a proven inefficiency.
 
+### Usage-share covariate (rec_yds, rush_yds) — applied by default
+
+`predict`, `parlay`, and `best-bet` fit `rec_yds` and `rush_yds` with an added covariate:
+each player's trailing share of his team's targets (`rec_yds`) or rushing attempts
+(`rush_yds`), recency-weighted over his own team's prior games and computed leakage-safe
+(only games strictly before the one being predicted ever contribute). In plain terms: a
+player who's been getting a bigger slice of his team's looks lately gets a projection that
+reflects that, on top of the existing player-ability/opponent-defense/home-field fit. See
+`docs/superpowers/specs/2026-09-14-nfl-props-usage-share-covariate-design.md` for the full
+design.
+
+Unlike `--pace-adjust` below, this covariate passed its validation gate: a real walk-forward
+backtest (1-year lookback, 3 seasons of real historical data, run 2026-09-14) showed NLL
+improving on both stats it applies to -- rec_yds 0.8702 -> 0.8412 (~3.3% better), rush_yds
+0.1347 -> 0.1204 (~10.6% better), with the covariate vs. without. Because both stats
+improved, it's applied by default everywhere the model is used for a live prediction, not
+just in `backtest`. `pass_yds` has no analogous covariate (a starting QB doesn't share pass
+attempts the way a WR/RB shares targets/carries within his own team) and is unaffected.
+
 ### `--pace-adjust` (diagnostic only, not applied by default)
 
 `backtest --pace-adjust` re-scores the same walk-forward predictions after applying
