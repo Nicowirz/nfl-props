@@ -29,6 +29,15 @@ RELEVANT_POSITIONS = {
     "rec_yds": {"QB", "RB", "TE", "WR"},
 }
 
+# Validated against real 3-season data, 2026-09-14, 1-year backtest lookback (the same
+# window the pace-adjustment feature was validated against). GATE PASSED for both stats:
+#   rec_yds   NLL 0.8702 -> 0.8412  (~3.3% better)
+#   rush_yds  NLL 0.1347 -> 0.1204  (~10.6% better)
+# (Baseline "without" values must be computed with `game_id` dropped from the input --
+# walk_forward() auto-activates the covariate whenever `game_id` is present, which real
+# data always has, so a naive without/with comparison against real data silently
+# compares the covariate against itself. See docs/superpowers/plans/2026-09-14-nfl-
+# props-usage-share-covariate.md's Task 5 ledger entry for the full story.)
 SHARE_STATS = {"rec_yds", "rush_yds"}  # stats with a real usage-share covariate; the
                                        # underlying numerator column is QUALIFY_COLUMN[stat]
                                        # (targets for rec_yds, carries for rush_yds) --
