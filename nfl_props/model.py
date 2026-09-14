@@ -139,6 +139,8 @@ class Ratings:
     defense: dict[str, float]
     position_intercept: dict[str, float]  # baseline log(yards + OFFSET) per position group
     intercept_fallback: float             # row-count-weighted average, for a group unseen at fit time
+    share_coef: float | None                # fitted usage-share sensitivity; None if not applicable
+    share_fallback: dict[str, float]        # per-group average trailing_share at fit time; {} if share_coef is None
     home_field: float
     sigma: dict[str, float]
     sigma_global: float
@@ -204,7 +206,10 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
     # whichever group has the most qualifying rows (e.g. a scrambling QB's rush_yds rating
     # used to default toward a full-workload RB's baseline when his own carries were too
     # sparse to fit an ability of his own).
-    X = np.zeros((n, n_g + 1 + n_p + n_t))
+    has_share = stat in SHARE_STATS and "trailing_share" in df.columns
+    n_extra = 1 if has_share else 0
+
+    X = np.zeros((n, n_g + 1 + n_p + n_t + n_extra))
     gi = df["position_group"].map(gidx).to_numpy()
     X[np.arange(n), gi] = 1.0
     X[:, n_g] = df["home"].to_numpy(dtype=float)
@@ -212,11 +217,14 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
     ti = df["opponent_team"].map(tidx).to_numpy()
     X[np.arange(n), n_g + 1 + pi] = 1.0
     X[np.arange(n), n_g + 1 + n_p + ti] = 1.0
+    if has_share:
+        X[:, n_g + 1 + n_p + n_t] = df["trailing_share"].to_numpy(dtype=float)
 
     penalty = np.zeros(X.shape[1])
     penalty[:n_g] = GROUP_INTERCEPT_REG  # group intercepts: minimally regularized (see constant above)
-    penalty[n_g + 1:] = reg              # player ability + opponent defense; home field (index n_g)
-                                         # stays unregularized, same as the original design
+    penalty[n_g + 1:n_g + 1 + n_p + n_t] = reg  # player ability + opponent defense; home field
+                                                # (index n_g) and the share column (if present,
+                                                # last index) both stay unregularized
     XtWX = X.T @ (X * w[:, None])
     XtWy = X.T @ (y * w)
     b = np.linalg.solve(XtWX + np.diag(penalty), XtWy)
@@ -225,6 +233,11 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
     home_field = float(b[n_g])
     ability = {p: float(b[n_g + 1 + i]) for p, i in pidx.items()}
     defense = {t: float(b[n_g + 1 + n_p + i]) for t, i in tidx.items()}
+    share_coef = float(b[n_g + 1 + n_p + n_t]) if has_share else None
+    share_fallback: dict[str, float] = {}
+    if has_share:
+        share_fallback = {g: float(df.loc[df["position_group"] == g, "trailing_share"].mean())
+                          for g in groups}
     group_counts = df["position_group"].value_counts().to_dict()
     intercept_fallback = float(np.average([position_intercept[g] for g in groups],
                                           weights=[group_counts[g] for g in groups]))
@@ -246,18 +259,26 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
         stat=stat, players=players, player_name=player_name, position_group=position_group,
         ability=ability, teams=teams, defense=defense,
         position_intercept=position_intercept, intercept_fallback=intercept_fallback,
+        share_coef=share_coef, share_fallback=share_fallback,
         home_field=home_field, sigma=sigma, sigma_global=sigma_global, as_of=as_of,
         n_games=n, game_counts=game_counts,
     )
 
 
 def predicted_distribution(r: Ratings, player_id: str, position_group: str, opponent_team: str,
-                           home: bool) -> tuple[float, float]:
+                           home: bool, trailing_share: float | None = None) -> tuple[float, float]:
     """(mu, sigma) of log(yards + OFFSET) for a player-game. Unknown players get their
     position group's average ability (0.0, relative to that group's own intercept) and
     are flagged in `r.prior_players`, same treatment epl-parlay gives a club with no
     fitted history. A position group never seen at fit time falls back to
     `r.intercept_fallback` (the row-count-weighted average across fitted groups).
+
+    `trailing_share` is ignored entirely when `r.share_coef is None` (a stat with no
+    usage-share covariate, or a fit that didn't have the trailing_share column
+    available). When `r.share_coef` IS set and `trailing_share` is omitted (None), the
+    position group's fitted average trailing_share (`r.share_fallback`) is used instead
+    -- the same "assume average when we don't know" treatment ability already gets for
+    an unknown player.
     """
     ability = r.ability.get(player_id)
     if ability is None:
@@ -267,5 +288,9 @@ def predicted_distribution(r: Ratings, player_id: str, position_group: str, oppo
     defense = r.defense.get(opponent_team, 0.0)
     intercept = r.position_intercept.get(position_group, r.intercept_fallback)
     mu = intercept + ability + defense + (r.home_field if home else 0.0)
+    if r.share_coef is not None:
+        effective_share = (trailing_share if trailing_share is not None
+                           else r.share_fallback.get(position_group, 0.0))
+        mu += r.share_coef * effective_share
     sigma = r.sigma.get(position_group, r.sigma_global)
     return mu, sigma

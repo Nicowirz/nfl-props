@@ -294,3 +294,91 @@ def test_current_trailing_share_none_below_threshold():
     df, _ = _synthetic_share_games(n_prior=6)
     # P3 only has 2 games total -- below NEW_PLAYER_GAMES(4).
     assert model.current_trailing_share(df, "rec_yds", "P3") is None
+
+
+def _synthetic_with_share(n_players=16, n_teams=8, games_per_player=14, seed=11,
+                          true_share_coef=1.5):
+    """Like _synthetic(), but with real teammates sharing a game_id (2 players per team
+    per game) and a KNOWN true share-sensitivity baked into the generating model, so the
+    fitted share_coef can be checked against a ground truth.
+    """
+    rng = np.random.default_rng(seed)
+    players = [f"P{i}" for i in range(n_players)]
+    teams = [f"T{i}" for i in range(n_teams)]
+    ability = dict(zip(players, rng.normal(0, 0.2, n_players)))
+    defense = dict(zip(teams, rng.normal(0, 0.15, n_teams)))
+    intercept, home_field, sigma = 4.2, 0.05, 0.30
+    # two players per team, sharing that team's games
+    player_team = {}
+    for i, p in enumerate(players):
+        player_team[p] = teams[i % n_teams]
+    rows = []
+    d = pd.Timestamp("2024-09-01")
+    game_counter = 0
+    for _ in range(games_per_player):
+        for team in teams:
+            opp = rng.choice([t for t in teams if t != team])
+            home = bool(rng.integers(0, 2))
+            teammates = [p for p, t in player_team.items() if t == team]
+            game_id = f"g{game_counter}"
+            game_counter += 1
+            raw_targets = {p: float(rng.integers(2, 10)) for p in teammates}
+            for p in teammates:
+                rows.append({
+                    "player_id": p, "player_name": p, "position_group": "WR", "team": team,
+                    "opponent_team": opp, "game_id": game_id, "date": d, "home": home,
+                    "receiving_yards": 0.0, "targets": raw_targets[p],
+                    "passing_yards": 0.0, "attempts": 0.0, "rushing_yards": 0.0, "carries": 0.0,
+                })
+        d += pd.Timedelta(days=7)
+    df = pd.DataFrame(rows)
+    # Re-generate receiving_yards WITH the true share effect, using each row's own
+    # trailing_share (computed the same leakage-safe way fit() will use) so the
+    # generating process matches what add_trailing_share() will actually feed the fit.
+    aug = model.add_trailing_share(df, "rec_yds", halflife_days=100_000)
+    rng2 = np.random.default_rng(seed + 1)
+    new_y = []
+    for _, row in aug.iterrows():
+        mu = (intercept + ability[row["player_id"]] + defense[row["opponent_team"]]
+             + (home_field if row["home"] else 0.0) + true_share_coef * row["trailing_share"])
+        new_y.append(rng2.normal(mu, sigma))
+    aug["receiving_yards"] = np.maximum(0.0, np.exp(new_y) - model.OFFSET)
+    return aug.drop(columns=["trailing_share"]), true_share_coef
+
+
+def test_fit_recovers_share_coef_when_trailing_share_present():
+    df, true_share_coef = _synthetic_with_share()
+    aug = model.add_trailing_share(df, "rec_yds", halflife_days=100_000)
+    r = model.fit(aug, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    assert r.share_coef is not None
+    assert abs(r.share_coef - true_share_coef) < 0.5
+
+
+def test_fit_share_coef_is_none_without_trailing_share_column():
+    df, _ = _synthetic_with_share()
+    r = model.fit(df, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    assert r.share_coef is None
+    assert r.share_fallback == {}
+
+
+def test_predicted_distribution_applies_share_coef():
+    df, true_share_coef = _synthetic_with_share()
+    aug = model.add_trailing_share(df, "rec_yds", halflife_days=100_000)
+    r = model.fit(aug, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    player_id = aug["player_id"].iloc[0]
+    opp = aug["opponent_team"].iloc[0]
+    mu_low, _ = model.predicted_distribution(r, player_id, "WR", opp, True, trailing_share=0.1)
+    mu_high, _ = model.predicted_distribution(r, player_id, "WR", opp, True, trailing_share=0.5)
+    assert mu_high > mu_low  # true_share_coef is positive in this fixture
+
+
+def test_predicted_distribution_uses_group_fallback_when_share_omitted():
+    df, _ = _synthetic_with_share()
+    aug = model.add_trailing_share(df, "rec_yds", halflife_days=100_000)
+    r = model.fit(aug, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    player_id = aug["player_id"].iloc[0]
+    opp = aug["opponent_team"].iloc[0]
+    mu_omitted, _ = model.predicted_distribution(r, player_id, "WR", opp, True)
+    mu_fallback, _ = model.predicted_distribution(r, player_id, "WR", opp, True,
+                                                  trailing_share=r.share_fallback["WR"])
+    assert mu_omitted == pytest.approx(mu_fallback)
