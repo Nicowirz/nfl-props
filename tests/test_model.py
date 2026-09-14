@@ -272,3 +272,25 @@ def test_add_trailing_share_never_returns_nan():
     df, _ = _synthetic_share_games(n_prior=6)
     out = model.add_trailing_share(df, "rec_yds", halflife_days=180.0)
     assert out["trailing_share"].notna().all()
+
+
+def test_current_trailing_share_matches_independent_calculation():
+    df, p1_targets = _synthetic_share_games(n_prior=6)
+    as_of = p1_targets[-1][0] + pd.Timedelta(days=7)  # one week after P1's last game
+    result = model.current_trailing_share(df, "rec_yds", "P1", as_of=as_of.date(), halflife_days=180.0)
+    shares = np.array([t / total for _, t, total in p1_targets])
+    days_ago = np.array([(as_of - d).days for d, _, _ in p1_targets], dtype=float)
+    w = 0.5 ** (days_ago / 180.0)
+    expected = float(np.sum(w * shares) / np.sum(w))
+    assert result == pytest.approx(expected)
+
+
+def test_current_trailing_share_none_for_unknown_player():
+    df, _ = _synthetic_share_games(n_prior=6)
+    assert model.current_trailing_share(df, "rec_yds", "nobody") is None
+
+
+def test_current_trailing_share_none_below_threshold():
+    df, _ = _synthetic_share_games(n_prior=6)
+    # P3 only has 2 games total -- below NEW_PLAYER_GAMES(4).
+    assert model.current_trailing_share(df, "rec_yds", "P3") is None

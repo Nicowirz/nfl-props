@@ -103,6 +103,31 @@ def add_trailing_share(stats: pd.DataFrame, stat: str, halflife_days: float = 18
     return df.drop(columns=["_share", "_n_prior"])
 
 
+def current_trailing_share(stats: pd.DataFrame, stat: str, player_id: str,
+                           as_of: date | None = None, halflife_days: float = 180.0) -> float | None:
+    """The live-prediction analog of add_trailing_share()'s per-row computation:
+    `player_id`'s recency-weighted usage share over ALL of his games strictly before
+    `as_of` (default: the most recent date in `stats`). Returns None if he has fewer
+    than NEW_PLAYER_GAMES such games -- the caller applies the group-average fallback
+    via predicted_distribution(), same as an unknown player's ability already defaults
+    to 0.0 there.
+    """
+    share_col = QUALIFY_COLUMN[stat]
+    player_rows = stats[stats["player_id"] == player_id]
+    if player_rows.empty:
+        return None
+    team_total = stats.groupby(["game_id", "team"])[share_col].transform("sum")
+    share = np.where(team_total.loc[player_rows.index] > 0,
+                     player_rows[share_col] / team_total.loc[player_rows.index], 0.0)
+    df = player_rows.assign(_share=share)
+    as_of_ts = pd.Timestamp(as_of) if as_of is not None else df["date"].max() + pd.Timedelta(days=1)
+    df = df[df["date"] < as_of_ts].sort_values("date")
+    if len(df) < NEW_PLAYER_GAMES:
+        return None
+    days_ago = (as_of_ts - df["date"]).dt.days.to_numpy(dtype=float)
+    return _weighted_share(df["_share"].to_numpy(dtype=float), days_ago, halflife_days)
+
+
 @dataclass
 class Ratings:
     stat: str
