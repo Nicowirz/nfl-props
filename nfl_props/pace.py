@@ -18,8 +18,22 @@ import numpy as np
 # 2026-09-14 with start = 1 year before the most recent game in the dataset (the
 # brief's original 2-year lookback left too little pre-start history at this point in
 # the 2026 season and was shortened to match the project's proven-working 1-year
-# default -- see task-4-report.md). Results: pass_yds=0.020, rush_yds=0.008,
-# rec_yds=-0.045.
+# default). Results: pass_yds=0.020, rush_yds=0.008, rec_yds=-0.045.
+#
+# GATE OUTCOME: a real backtest comparison (`backtest` vs `backtest --pace-adjust`,
+# default 1-year window) showed these calibrated values do NOT improve calibration:
+#   pass_yds  1.3036 -> 1.3036  (unchanged)
+#   rush_yds  0.1347 -> 0.1348  (worse)
+#   rec_yds   0.8702 -> 0.8702  (unchanged)
+# The gate therefore FAILED, and the adjustment is deliberately NOT applied in
+# predict/parlay/best-bet -- pace.py stays tested, working, currently-inert
+# infrastructure, wired only into backtest.py's --pace-adjust diagnostic flag.
+#
+# Also note: rec_yds's sign is anomalous relative to the design hypothesis. The
+# feature exists because shootout games were undershooting player yardage
+# predictions -- i.e. yardage should go UP with a higher predicted total, a positive
+# sensitivity. rec_yds calibrated to -0.045, the opposite direction, which is itself
+# a red flag independent of the NLL result above.
 SENSITIVITY: dict[str, float] = {"pass_yds": 0.020, "rush_yds": 0.008, "rec_yds": -0.045}
 
 

@@ -31,7 +31,7 @@ All commands: `.venv\Scripts\python -m nfl_props <command>`.
 | `ratings` | player ability + opponent defense ratings per stat category |
 | `predict --week N` | projected yardage distribution for that week's matchups |
 | `parlay [--odds file.csv]` | rank legs by edge against live Kalshi prices (no file needed to start), build ranked parlays; `--odds` overrides/supplements the feed, `--no-feed-odds` disables it |
-| `backtest` | walk-forward evaluation: log-likelihood and calibration vs. a naive baseline |
+| `backtest [--pace-adjust]` | walk-forward evaluation: log-likelihood and calibration vs. a naive baseline; `--pace-adjust` applies a calibrated adjustment to player predictions based on the game's predicted scoring total, for comparison against the unadjusted model -- see "What the backtest says" below, as calibrated it does not improve NLL and is not applied anywhere else |
 
 ### Typical week
 
@@ -148,6 +148,23 @@ cannot, without recorded historical prices) prove the model beats Kalshi's closi
 way `epl-parlay`'s backtest can against Bet365. Treat a reported "edge" in `parlay`
 output as *the feed's price minus the model's fair number*, not a proven inefficiency.
 
+### `--pace-adjust` (diagnostic only, not applied by default)
+
+`backtest --pace-adjust` re-scores the same walk-forward predictions after applying
+`nfl_props/pace.py`'s calibrated adjustment, which shifts a player's predicted mean based
+on how far the game's own predicted scoring total (fit independently, never the actual
+final score) is from a typical game -- the idea being that shootout games should push
+yardage predictions up and defensive slogs should push them down. It exists purely so
+`backtest` and `backtest --pace-adjust` can be run side by side for comparison; nothing
+else in the CLI touches it.
+
+As calibrated (2026-09-14, default 1-year window), it did **not** improve NLL: pass_yds
+1.3036 -> 1.3036 (unchanged), rush_yds 0.1347 -> 0.1348 (slightly worse), rec_yds 0.8702
+-> 0.8702 (unchanged). rec_yds's calibrated coefficient also came back the wrong sign
+relative to the design hypothesis. Because the adjustment failed this validation gate, it
+is **not** applied in `predict`, `parlay`, or `best-bet` -- `pace.py` is tested, working,
+currently-inert infrastructure.
+
 ## Known limitations
 
 - **No injury/inactive-list awareness.** `predict`/`parlay` filter to roster `status == "ACT"`
@@ -195,6 +212,8 @@ nfl_props/model.py      ridge fit per stat category, shrinkage, recency weightin
 nfl_props/markets.py    log-normal yardage distribution -> P(over/under line), devig, odds formats
 nfl_props/parlay.py     leg evaluation (edge, EV, Kelly), parlay enumeration
 nfl_props/backtest.py   walk-forward evaluation, calibration
+nfl_props/pace.py       game-pace adjustment for player-prop predictions -- currently unused
+                        by default; only reachable via `backtest --pace-adjust` (see below)
 nfl_props/cli.py        commands
 tests/                  pytest
 ```

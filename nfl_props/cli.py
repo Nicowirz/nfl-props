@@ -6,7 +6,7 @@ import sys
 
 import pandas as pd
 
-from . import backtest, data, game_backtest, game_model, kalshi, model, tracking
+from . import backtest, data, game_backtest, game_model, kalshi, model, pace, tracking
 from .game_markets import moneyline_prob
 from .markets import fair_odds, mean_yards, median_yards, parse_odds, prob_over, to_american
 from .parlay import (GameLeg, Leg, build_game_parlays, build_parlays, evaluate_game_legs,
@@ -165,12 +165,17 @@ def cmd_parlay(args):
 
 def cmd_backtest(args):
     stats = data.load_player_stats(args.seasons, refresh=args.refresh)
+    games = data.load_games(refresh=args.refresh) if args.pace_adjust else None
+    if args.pace_adjust:
+        coefs = ", ".join(f"{s}={v:.3f}" for s, v in pace.SENSITIVITY.items())
+        print(f"Pace adjustment: ON ({coefs})")
+    else:
+        print("Pace adjustment: OFF")
     for stat in STATS:
         if args.start:
             start = pd.Timestamp(args.start).date()
         else:
             start = (stats["date"].max() - pd.Timedelta(days=365 * args.test_seasons)).date()
-        games = data.load_games(refresh=args.refresh) if args.pace_adjust else None
         preds = backtest.walk_forward(stats, stat, start, halflife_days=args.halflife, reg=args.reg,
                                       pace_adjust=args.pace_adjust, games=games,
                                       game_halflife_days=args.game_halflife, game_reg=args.game_reg)
