@@ -29,6 +29,11 @@ RELEVANT_POSITIONS = {
     "rec_yds": {"QB", "RB", "TE", "WR"},
 }
 
+SHARE_STATS = {"rec_yds", "rush_yds"}  # stats with a real usage-share covariate; the
+                                       # underlying numerator column is QUALIFY_COLUMN[stat]
+                                       # (targets for rec_yds, carries for rush_yds) --
+                                       # pass_yds has no analog and is deliberately absent.
+
 OFFSET = 10.0             # log(yards + OFFSET) stays finite even for a slightly negative rushing game
 NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-sample in output
 MIN_GROUP_RESIDUALS = 30  # fewer residuals than this in a position group -> fall back to sigma_global
@@ -44,6 +49,58 @@ def _safe_log_yards(yards) -> np.ndarray:
     """
     raw = np.asarray(yards, dtype=float)
     return np.log(np.maximum(raw, 1.0 - OFFSET) + OFFSET)
+
+
+def _weighted_share(shares: np.ndarray, days_ago: np.ndarray, halflife_days: float) -> float:
+    w = 0.5 ** (days_ago / halflife_days)
+    return float(np.sum(w * shares) / np.sum(w))
+
+
+def add_trailing_share(stats: pd.DataFrame, stat: str, halflife_days: float = 180.0) -> pd.DataFrame:
+    """Add a "trailing_share" column: each row's recency-weighted average share of its
+    team's targets (rec_yds) or carries (rush_yds) over that PLAYER's own strictly-prior
+    games only -- a row's own game never contributes to its own trailing_share, so this
+    is leakage-safe by construction regardless of when it's later used.
+
+    Team totals are summed across the whole roster for that game_id, not filtered to
+    RELEVANT_POSITIONS -- a real usage share is a fraction of the team's true offensive
+    output. Below NEW_PLAYER_GAMES prior games, trailing_share falls back to the
+    row-count-weighted average among that position group's players who DO have enough
+    history, mirroring how `Ratings.intercept_fallback` already handles the same class
+    of "not enough of this specific player's own data" problem.
+    """
+    if "game_id" not in stats.columns:
+        raise ValueError("add_trailing_share requires a 'game_id' column")
+    share_col = QUALIFY_COLUMN[stat]
+    df = stats.copy()
+    team_total = df.groupby(["game_id", "team"])[share_col].transform("sum")
+    df["_share"] = np.where(team_total > 0, df[share_col] / team_total, 0.0)
+    df = df.sort_values(["player_id", "date"])
+
+    trailing = np.full(len(df), np.nan)
+    n_prior = np.zeros(len(df), dtype=int)
+    row_pos = {idx: i for i, idx in enumerate(df.index)}
+    for player_id, group in df.groupby("player_id", sort=False):
+        dates = group["date"].to_numpy()
+        shares = group["_share"].to_numpy(dtype=float)
+        for i, idx in enumerate(group.index):
+            pos = row_pos[idx]
+            n_prior[pos] = i
+            if i == 0:
+                continue
+            days_ago = (dates[i] - dates[:i]).astype("timedelta64[D]").astype(float)
+            trailing[pos] = _weighted_share(shares[:i], days_ago, halflife_days)
+
+    df = df.assign(trailing_share=trailing, _n_prior=n_prior)
+
+    enough = df[df["_n_prior"] >= NEW_PLAYER_GAMES]
+    group_fallback = enough.groupby("position_group")["trailing_share"].mean()
+    overall_fallback = float(enough["trailing_share"].mean()) if len(enough) else 0.0
+    low = df["_n_prior"] < NEW_PLAYER_GAMES
+    df.loc[low, "trailing_share"] = df.loc[low, "position_group"].map(group_fallback).fillna(overall_fallback)
+    df["trailing_share"] = df["trailing_share"].fillna(overall_fallback)
+
+    return df.drop(columns=["_share", "_n_prior"])
 
 
 @dataclass

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from nfl_props import model
 
@@ -178,3 +179,96 @@ def test_low_qualifying_group_does_not_inherit_other_groups_baseline():
     mu, _ = model.predicted_distribution(r, qb_players[0], "QB", "T0", home=False)
     assert abs(mu - qb_intercept) < abs(mu - rb_intercept)
     assert mu < (rb_intercept + qb_intercept) / 2
+
+
+def _synthetic_share_games(n_prior=6, seed=7):
+    """One player (P1, WR, team A) with `n_prior` weekly games plus one more (the query
+    game) -- a teammate (P2) fills out team A's target total each game so target_share is
+    well-defined. A second, unrelated team (B) with two of its own players is included so
+    the fixture also exercises the position-group fallback for a low-history player (P3,
+    fewer than NEW_PLAYER_GAMES games).
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    d = pd.Timestamp("2024-09-01")
+    p1_targets = []
+    for i in range(n_prior + 1):
+        t1 = float(rng.integers(3, 10))
+        t2 = float(rng.integers(3, 10))
+        p1_targets.append((d, t1, t1 + t2))
+        rows.append({"player_id": "P1", "position_group": "WR", "team": "A",
+                     "opponent_team": "B", "game_id": f"g{i}", "date": d,
+                     "targets": t1, "carries": 0.0, "home": True,
+                     "receiving_yards": 0.0, "rushing_yards": 0.0, "passing_yards": 0.0,
+                     "attempts": 0.0})
+        rows.append({"player_id": "P2", "position_group": "WR", "team": "A",
+                     "opponent_team": "B", "game_id": f"g{i}", "date": d,
+                     "targets": t2, "carries": 0.0, "home": True,
+                     "receiving_yards": 0.0, "rushing_yards": 0.0, "passing_yards": 0.0,
+                     "attempts": 0.0})
+        d += pd.Timedelta(days=7)
+    # P3 on team B: only 2 games -- below NEW_PLAYER_GAMES, must use the fallback.
+    for i in range(2):
+        rows.append({"player_id": "P3", "position_group": "WR", "team": "B",
+                     "opponent_team": "A", "game_id": f"g{i}", "date": pd.Timestamp("2024-09-01") + pd.Timedelta(days=7 * i),
+                     "targets": 5.0, "carries": 0.0, "home": False,
+                     "receiving_yards": 0.0, "rushing_yards": 0.0, "passing_yards": 0.0,
+                     "attempts": 0.0})
+        rows.append({"player_id": "P4", "position_group": "WR", "team": "B",
+                     "opponent_team": "A", "game_id": f"g{i}", "date": pd.Timestamp("2024-09-01") + pd.Timedelta(days=7 * i),
+                     "targets": 3.0, "carries": 0.0, "home": False,
+                     "receiving_yards": 0.0, "rushing_yards": 0.0, "passing_yards": 0.0,
+                     "attempts": 0.0})
+    return pd.DataFrame(rows), p1_targets
+
+
+def test_add_trailing_share_requires_game_id():
+    df = pd.DataFrame([{"player_id": "P1", "position_group": "WR", "team": "A",
+                        "date": pd.Timestamp("2024-09-01"), "targets": 5.0}])
+    try:
+        model.add_trailing_share(df, "rec_yds")
+        assert False, "expected a ValueError for a missing game_id column"
+    except ValueError as e:
+        assert "game_id" in str(e)
+
+
+def test_add_trailing_share_matches_independent_weighted_calculation():
+    df, p1_targets = _synthetic_share_games(n_prior=6)
+    out = model.add_trailing_share(df, "rec_yds", halflife_days=180.0)
+    # P1's LAST game (index n_prior, the query game): compute the expected trailing
+    # share independently from the first n_prior games' (date, own_targets, team_total).
+    query_date = p1_targets[-1][0]
+    prior = p1_targets[:-1]
+    shares = np.array([t / total for _, t, total in prior])
+    days_ago = np.array([(query_date - d).days for d, _, _ in prior], dtype=float)
+    w = 0.5 ** (days_ago / 180.0)
+    expected = float(np.sum(w * shares) / np.sum(w))
+    row = out[(out["player_id"] == "P1") & (out["game_id"] == f"g{len(p1_targets) - 1}")].iloc[0]
+    assert row["trailing_share"] == pytest.approx(expected)
+
+
+def test_add_trailing_share_never_uses_the_rows_own_game():
+    # P1's FIRST game (g0) has zero prior games -- its trailing_share must come from the
+    # low-history fallback, never from g0's own target/team-total values.
+    df, p1_targets = _synthetic_share_games(n_prior=6)
+    out = model.add_trailing_share(df, "rec_yds", halflife_days=180.0)
+    own_share = p1_targets[0][1] / p1_targets[0][2]
+    row = out[(out["player_id"] == "P1") & (out["game_id"] == "g0")].iloc[0]
+    assert row["trailing_share"] != pytest.approx(own_share)
+
+
+def test_add_trailing_share_low_history_uses_group_fallback():
+    df, _ = _synthetic_share_games(n_prior=6)
+    out = model.add_trailing_share(df, "rec_yds", halflife_days=180.0)
+    # P3 has only 2 games (both team B, position_group WR) -- below NEW_PLAYER_GAMES(4),
+    # so both of P3's rows must equal the WR group's fallback average (computed only
+    # from players who DO have >= 4 prior games -- i.e. P1's later rows). Both P3 rows
+    # should get the identical fallback value (not each other's own thin data).
+    p3_rows = out[out["player_id"] == "P3"]
+    assert p3_rows["trailing_share"].nunique() == 1
+
+
+def test_add_trailing_share_never_returns_nan():
+    df, _ = _synthetic_share_games(n_prior=6)
+    out = model.add_trailing_share(df, "rec_yds", halflife_days=180.0)
+    assert out["trailing_share"].notna().all()
