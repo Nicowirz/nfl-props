@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import numpy as np
 
-# Calibrated via calibrate_sensitivity() against 3 seasons of real nflverse data -- see
-# that function's docstring for the exact procedure, and Task 4 of
-# docs/superpowers/plans/2026-09-14-nfl-props-game-pace-adjustment.md for how these
-# three numbers were produced. Starts at 0.0 (a true no-op) so pace_adjust()'s own tests
-# are meaningful before calibration has run.
-SENSITIVITY: dict[str, float] = {"pass_yds": 0.0, "rush_yds": 0.0, "rec_yds": 0.0}
+# Calibrated via calibrate_sensitivity() against 3 seasons of real nflverse data, run
+# 2026-09-14 with start = 1 year before the most recent game in the dataset (the
+# brief's original 2-year lookback left too little pre-start history at this point in
+# the 2026 season and was shortened to match the project's proven-working 1-year
+# default -- see task-4-report.md). Results: pass_yds=0.020, rush_yds=0.008,
+# rec_yds=-0.045.
+SENSITIVITY: dict[str, float] = {"pass_yds": 0.020, "rush_yds": 0.008, "rec_yds": -0.045}
 
 
 def pace_adjust(mu: float, predicted_total: float, league_avg_total: float, stat: str,

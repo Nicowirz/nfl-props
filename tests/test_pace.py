@@ -34,12 +34,16 @@ def test_pace_adjust_zero_sensitivity_is_always_a_no_op():
 
 
 def test_pace_adjust_uses_module_default_sensitivity_when_not_given():
-    # module-default SENSITIVITY starts at 0.0 for every stat until Task 4 calibrates
-    # real values, so this is a no-op for now -- this test just proves the default path
-    # (no explicit sensitivity argument) wires through to pace.SENSITIVITY correctly.
+    # Task 4 calibrated real (non-zero) SENSITIVITY values against live data -- this
+    # test proves the default path (no explicit sensitivity argument) wires through to
+    # pace.SENSITIVITY correctly, by computing the expected shift from that module dict
+    # directly rather than hardcoding its calibrated value here (which would need
+    # updating every time SENSITIVITY is recalibrated).
     mu = 3.8
-    assert pace.pace_adjust(mu, predicted_total=99.0, league_avg_total=44.0,
-                            stat="rec_yds") == pytest.approx(mu)
+    predicted_total, league_avg_total = 99.0, 44.0
+    expected = mu + pace.SENSITIVITY["rec_yds"] * np.log(predicted_total / league_avg_total)
+    assert pace.pace_adjust(mu, predicted_total=predicted_total, league_avg_total=league_avg_total,
+                            stat="rec_yds") == pytest.approx(expected)
 
 
 def _direct_calibration_inputs(true_sensitivity, date=pd.Timestamp("2024-10-01")):

@@ -170,7 +170,10 @@ def cmd_backtest(args):
             start = pd.Timestamp(args.start).date()
         else:
             start = (stats["date"].max() - pd.Timedelta(days=365 * args.test_seasons)).date()
-        preds = backtest.walk_forward(stats, stat, start, halflife_days=args.halflife, reg=args.reg)
+        games = data.load_games(refresh=args.refresh) if args.pace_adjust else None
+        preds = backtest.walk_forward(stats, stat, start, halflife_days=args.halflife, reg=args.reg,
+                                      pace_adjust=args.pace_adjust, games=games,
+                                      game_halflife_days=args.game_halflife, game_reg=args.game_reg)
         s = backtest.summarize(preds)
         print(f"\n=== {stat}: {s['n']} predictions from {start} ===")
         print(f"NLL model {s['nll_model']:.4f} vs baseline (season-to-date average) "
@@ -459,6 +462,9 @@ def main(argv=None):
     bt = sub.add_parser("backtest", parents=[common], help="walk-forward evaluation vs. a naive baseline")
     bt.add_argument("--start", help="YYYY-MM-DD; default = start of the last --test-seasons seasons")
     bt.add_argument("--test-seasons", type=int, default=1)
+    bt.add_argument("--pace-adjust", action="store_true",
+                    help="apply the game-pace adjustment (pace.pace_adjust) before scoring, "
+                         "for comparison against the unadjusted model")
     bt.set_defaults(fn=cmd_backtest)
 
     gr = sub.add_parser("game-ratings", parents=[common], help="team power + scoring/allowed ratings")
