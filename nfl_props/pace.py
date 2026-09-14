@@ -32,3 +32,58 @@ def pace_adjust(mu: float, predicted_total: float, league_avg_total: float, stat
     """
     s = SENSITIVITY if sensitivity is None else sensitivity
     return mu + s[stat] * float(np.log(predicted_total / league_avg_total))
+
+
+def calibrate_sensitivity(stats, games, stat: str, start, halflife_days: float = 180.0,
+                          reg: float = 5.0, min_games: int = 200,
+                          game_halflife_days: float = 365.0, game_reg: float | None = None,
+                          game_min_games: int | None = None) -> float:
+    """Derive how much a game's predicted total (known only as of that game's own date,
+    never the actual final score) correlates with the player model's own residual, for
+    `stat`. Reuses backtest.walk_forward() (unadjusted) and
+    game_backtest.walk_forward_total() exactly as they already exist -- both are already
+    leakage-safe, refitting as of each historical date -- and joins each player-game row
+    to its game's predicted total via (date, home_team, away_team). Using the actual
+    final total instead of the game model's own prediction would leak future information
+    into the calibration; the whole point is to learn what the signal was worth knowing
+    in advance, matching exactly how pace_adjust() is used at real prediction time.
+
+    Returns a single float (0.0 if there isn't enough overlapping data to fit anything
+    meaningful) -- the caller decides whether/how to persist it into SENSITIVITY.
+    """
+    from . import backtest, game_backtest, game_model as gm
+
+    game_reg = gm.TOTAL_REG if game_reg is None else game_reg
+    game_min_games = gm.MIN_TOTAL_GAMES if game_min_games is None else game_min_games
+
+    player_preds = backtest.walk_forward(stats, stat, start, halflife_days=halflife_days,
+                                         reg=reg, min_games=min_games)
+    game_preds = game_backtest.walk_forward_total(games, start, halflife_days=game_halflife_days,
+                                                  reg=game_reg, min_games=game_min_games)
+    if player_preds.empty or game_preds.empty:
+        return 0.0
+
+    player_preds = player_preds.copy()
+    player_preds["home_team"] = np.where(player_preds["home"], player_preds["team"],
+                                         player_preds["opponent_team"])
+    player_preds["away_team"] = np.where(player_preds["home"], player_preds["opponent_team"],
+                                         player_preds["team"])
+
+    game_key = game_preds.rename(columns={"model_mu": "game_total_mu"})[
+        ["gameday", "home_team", "away_team", "game_total_mu", "league_avg_total"]]
+
+    joined = player_preds.merge(game_key, left_on=["date", "home_team", "away_team"],
+                                right_on=["gameday", "home_team", "away_team"], how="inner")
+    if joined.empty:
+        return 0.0
+
+    residual = (joined["y"] - joined["model_mu"]).to_numpy(dtype=float)
+    total_dev = np.log(joined["game_total_mu"].to_numpy(dtype=float)
+                       / joined["league_avg_total"].to_numpy(dtype=float))
+    days_ago = (joined["date"].max() - joined["date"]).dt.days.to_numpy(dtype=float)
+    w = 0.5 ** (days_ago / halflife_days)
+
+    denom = float(np.sum(w * total_dev ** 2))
+    if denom <= 0:
+        return 0.0
+    return float(np.sum(w * total_dev * residual) / denom)
