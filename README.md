@@ -152,8 +152,10 @@ output as *the feed's price minus the model's fair number*, not a proven ineffic
 
 `predict`, `parlay`, and `best-bet` fit `rec_yds` and `rush_yds` with an added covariate:
 each player's trailing share of his team's targets (`rec_yds`) or rushing attempts
-(`rush_yds`), recency-weighted over his own team's prior games and computed leakage-safe
-(only games strictly before the one being predicted ever contribute). In plain terms: a
+(`rush_yds`), recency-weighted over his own prior games and computed leakage-safe
+(only games strictly before the one being predicted ever contribute -- a player who
+misses a week contributes nothing for that week even though his team still played). In
+plain terms: a
 player who's been getting a bigger slice of his team's looks lately gets a projection that
 reflects that, on top of the existing player-ability/opponent-defense/home-field fit. See
 `docs/superpowers/specs/2026-09-14-nfl-props-usage-share-covariate-design.md` for the full

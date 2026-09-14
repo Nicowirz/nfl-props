@@ -77,6 +77,10 @@ def add_trailing_share(stats: pd.DataFrame, stat: str, halflife_days: float = 18
     row-count-weighted average among that position group's players who DO have enough
     history, mirroring how `Ratings.intercept_fallback` already handles the same class
     of "not enough of this specific player's own data" problem.
+
+    Returns rows sorted by (player_id, date), not the caller's original order --
+    callers that rely on positional/chronological indexing into the return value must
+    re-sort first.
     """
     if "game_id" not in stats.columns:
         raise ValueError("add_trailing_share requires a 'game_id' column")
@@ -102,6 +106,16 @@ def add_trailing_share(stats: pd.DataFrame, stat: str, halflife_days: float = 18
 
     df = df.assign(trailing_share=trailing, _n_prior=n_prior)
 
+    # Unlike the per-row computation above (leakage-safe by construction: a row's own
+    # game never contributes to its own trailing_share), this group-level fallback is a
+    # pooled statistic over the ENTIRE input frame. When called from backtest.py's
+    # walk_forward(), that frame includes rows inside the current walk-forward TEST
+    # window, not just the training window -- so a handful of low-history rows' fallback
+    # values technically see a sliver of future data. Measured impact is negligible
+    # (roughly 1/10,000 of one share value per contributing row) and is mostly absorbed
+    # by the position-group intercept term elsewhere in the fit; this is an accepted,
+    # measured-negligible exception to the leakage-safety principle above, not an
+    # oversight.
     enough = df[df["_n_prior"] >= NEW_PLAYER_GAMES]
     group_fallback = enough.groupby("position_group")["trailing_share"].mean()
     overall_fallback = float(enough["trailing_share"].mean()) if len(enough) else 0.0

@@ -35,7 +35,9 @@ def cmd_update(args):
 def cmd_ratings(args):
     stats = _load(args)
     for stat in STATS:
-        r = model.fit(stats, stat, halflife_days=args.halflife, reg=args.reg)
+        fit_stats = (model.add_trailing_share(stats, stat, halflife_days=args.halflife)
+                    if stat in model.SHARE_STATS else stats)
+        r = model.fit(fit_stats, stat, halflife_days=args.halflife, reg=args.reg)
         print(f"\n=== {stat} (as of {r.as_of}, {r.n_games} games) ===")
         print(r.table().head(args.top).to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
 
@@ -58,7 +60,8 @@ def cmd_predict(args):
     roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
     roster_names = {p["player_id"]: p["full_name"] for _, p in roster.iterrows()}
     for stat in STATS:
-        fit_stats = model.add_trailing_share(stats, stat) if stat in model.SHARE_STATS else stats
+        fit_stats = (model.add_trailing_share(stats, stat, halflife_days=args.halflife)
+                    if stat in model.SHARE_STATS else stats)
         r = model.fit(fit_stats, stat, halflife_days=args.halflife, reg=args.reg)
         cand = _roster_for_stat(roster, stat)
         rows = []
@@ -66,7 +69,7 @@ def cmd_predict(args):
             for team, opp, home in ((g["home_team"], g["away_team"], True),
                                     (g["away_team"], g["home_team"], False)):
                 for _, p in cand[cand["team"] == team].iterrows():
-                    ts = (model.current_trailing_share(stats, stat, p["player_id"])
+                    ts = (model.current_trailing_share(stats, stat, p["player_id"], halflife_days=args.halflife)
                          if stat in model.SHARE_STATS else None)
                     mu, sigma = model.predicted_distribution(r, p["player_id"], p["position"], opp, home,
                                                              trailing_share=ts)
@@ -103,7 +106,8 @@ def _mu_sigma_for_legs(legs: list[Leg], stats: pd.DataFrame, roster: pd.DataFram
     fitted: dict[str, model.Ratings] = {}
     for lg in legs:
         if lg.stat not in fitted:
-            fit_stats = model.add_trailing_share(stats, lg.stat) if lg.stat in model.SHARE_STATS else stats
+            fit_stats = (model.add_trailing_share(stats, lg.stat, halflife_days=args.halflife)
+                        if lg.stat in model.SHARE_STATS else stats)
             fitted[lg.stat] = model.fit(fit_stats, lg.stat, halflife_days=args.halflife, reg=args.reg)
         r = fitted[lg.stat]
         row = roster[roster["full_name"].str.lower() == lg.player.lower()]
@@ -117,7 +121,7 @@ def _mu_sigma_for_legs(legs: list[Leg], stats: pd.DataFrame, roster: pd.DataFram
         g = g.iloc[0]
         home = bool(g["home_team"] == team)
         opp = g["away_team"] if home else g["home_team"]
-        ts = (model.current_trailing_share(stats, lg.stat, row["player_id"])
+        ts = (model.current_trailing_share(stats, lg.stat, row["player_id"], halflife_days=args.halflife)
              if lg.stat in model.SHARE_STATS else None)
         mu, sigma = model.predicted_distribution(r, row["player_id"], row["position"], opp, home,
                                                  trailing_share=ts)
