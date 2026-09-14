@@ -217,7 +217,19 @@ a player-prop leg can't be combined into one parlay ticket yet.
 | `game-predict --week N` | moneyline/spread/total fair probabilities for that week's games |
 | `game-bets --week N [--odds file.csv]` | edge vs. the real reference line built into `games.csv`, no CSV required to start; `--odds` overrides with your own prices |
 | `game-backtest` | walk-forward evaluation vs. a naive baseline (home-field-only for margin, league-average for totals) |
-| `best-bet --week N [--odds file.csv]` | the single highest-edge pick in each market: one game bet (from the real reference line) and, if `--odds` is given, one player prop |
+| `best-bet --week N [--odds file.csv] [--log]` | the single highest-edge pick in each market: one game bet (from the real reference line) and one player prop (from the Kalshi feed by default, or `--odds`); `--log` appends the pick(s) to `data/picks_log.csv` |
+| `grade` | grade every logged pick whose game has finished against the real result, print the log with results, and show the running record/win rate/ROI |
+
+### Tracking picks (`best-bet --log` / `grade`)
+
+`best-bet --log` appends that run's pick(s) to `data/picks_log.csv` (git-ignored, local
+only, same as every other file under `data/`) as `PENDING`. Run `grade` any time
+afterward -- it looks up real results for any pick whose game has since completed, marks
+it `HIT`/`MISS`/`PUSH`, and prints the full log plus a running record and flat-1-unit-
+stake ROI. A pick for a game that hasn't finished yet stays `PENDING` until you grade it
+again later. This is the actual, honest track record -- not a substitute for `backtest`
+(which validates calibration against history), but a real answer to "how did the model's
+actual recommendations do."
 
 ### The reference line, and its sign convention
 

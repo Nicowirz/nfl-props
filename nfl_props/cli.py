@@ -6,7 +6,7 @@ import sys
 
 import pandas as pd
 
-from . import backtest, data, game_backtest, game_model, kalshi, model
+from . import backtest, data, game_backtest, game_model, kalshi, model, tracking
 from .game_markets import moneyline_prob
 from .markets import fair_odds, mean_yards, median_yards, parse_odds, prob_over, to_american
 from .parlay import (GameLeg, Leg, build_game_parlays, build_parlays, evaluate_game_legs,
@@ -345,12 +345,20 @@ def cmd_best_bet(args):
     game_evals = evaluate_game_legs(game_legs, distributions, market_weight=args.market_weight) if game_legs else []
 
     print(f"=== Best bet of the week (season {args.season}, week {args.week}) ===\n")
+    log_rows = []
     print("Game market:")
     if game_evals:
         best_game = max(game_evals, key=lambda e: e.edge)
         print(f"  {best_game.leg.label}")
         print(f"  odds {best_game.leg.odds:.2f} ({to_american(best_game.leg.odds)})  "
               f"model {best_game.p_model:6.1%}  edge {best_game.edge:+.1%}  EV {best_game.ev:+.1%}")
+        log_rows.append({
+            "season": args.season, "week": args.week, "market": best_game.leg.market,
+            "subject": f"{best_game.leg.away_team}@{best_game.leg.home_team}",
+            "selection": best_game.leg.selection,
+            "line": best_game.leg.line if best_game.leg.line is not None else 0.0,
+            "odds": best_game.leg.odds, "p_model": best_game.p_model, "edge": best_game.edge,
+        })
     else:
         print("  no legs available (games.csv had no odds for this week).")
 
@@ -374,6 +382,36 @@ def cmd_best_bet(args):
         print(f"  {best_prop.leg.label}")
         print(f"  odds {best_prop.leg.odds:.2f} ({to_american(best_prop.leg.odds)})  "
               f"model {best_prop.p_model:6.1%}  edge {best_prop.edge:+.1%}  EV {best_prop.ev:+.1%}")
+        log_rows.append({
+            "season": args.season, "week": args.week, "market": best_prop.leg.stat,
+            "subject": best_prop.leg.player, "selection": best_prop.leg.selection,
+            "line": best_prop.leg.line, "odds": best_prop.leg.odds,
+            "p_model": best_prop.p_model, "edge": best_prop.edge,
+        })
+
+    if args.log and log_rows:
+        tracking.log_picks(log_rows)
+        print(f"\nLogged {len(log_rows)} pick(s) to {tracking.LOG_PATH} -- run "
+              f"`grade` after these games complete to see how they did.")
+
+
+def cmd_grade(args):
+    stats = data.load_player_stats(args.seasons, refresh=args.refresh)
+    games = data.load_games(refresh=args.refresh)
+    df = tracking.grade_log(stats, games)
+    if df.empty:
+        print(f"no picks logged yet at {tracking.LOG_PATH} -- run `best-bet --log` first")
+        return
+    display = df.copy()
+    for col in ("odds", "p_model", "edge"):
+        display[col] = display[col].astype(float)
+    print(display.to_string(index=False, formatters={
+        "odds": "{:.2f}".format, "p_model": "{:.1%}".format, "edge": "{:+.1%}".format,
+    }))
+    s = tracking.summarize(df)
+    print(f"\nRecord: {s['wins']}-{s['losses']}-{s['pushes']} (W-L-P), "
+          f"{s['pending']} pending, win rate {s['win_rate']:.1%}, "
+          f"flat-1-unit-stake ROI {s['roi']:+.1%}")
 
 
 def main(argv=None):
@@ -451,7 +489,12 @@ def main(argv=None):
     bb.add_argument("--odds", help="CSV: player,stat,line,over_odds,under_odds (overrides/supplements the Kalshi feed)")
     bb.add_argument("--no-feed-odds", action="store_true", help="ignore Kalshi's live prop feed")
     bb.add_argument("--market-weight", type=float, default=DEFAULTS["market_weight"])
+    bb.add_argument("--log", action="store_true", help="append this week's pick(s) to data/picks_log.csv for grading later")
     bb.set_defaults(fn=cmd_best_bet)
+
+    gd = sub.add_parser("grade", parents=[common],
+                        help="grade logged best-bet picks against real results and show the running record")
+    gd.set_defaults(fn=cmd_grade)
 
     args = p.parse_args(argv)
     args.fn(args)
