@@ -57,3 +57,11 @@ def test_margin_calibration_pit_is_roughly_uniform():
     assert 0.35 < pit.mean() < 0.65
     cal = game_backtest.calibration(preds, "actual_margin")
     assert cal["n"].sum() == len(preds)
+
+
+def test_walk_forward_total_includes_league_avg_total():
+    df = _synthetic_season_margins()
+    start = df["gameday"].iloc[len(df) // 2].date()
+    preds = game_backtest.walk_forward_total(df, start, min_games=20)
+    assert "league_avg_total" in preds.columns
+    assert (preds["league_avg_total"] > 0).all()

@@ -77,6 +77,7 @@ def walk_forward_total(games: pd.DataFrame, start: date, halflife_days: float = 
                 "gameday": g["gameday"], "home_team": g["home_team"], "away_team": g["away_team"],
                 "actual_total": y, "model_mu": mu, "model_sigma": sigma,
                 "base_mu": base_mu, "base_sigma": base_sigma,
+                "league_avg_total": ratings.intercept * 2,
             })
         league_totals.append(y)
     return pd.DataFrame(rows)

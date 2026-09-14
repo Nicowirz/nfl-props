@@ -11,23 +11,39 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from . import model
+from . import game_model, model, pace
 
 EPS = 1e-6
 
 
 def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: float = 180.0,
-                 reg: float = 5.0, min_games: int = 200) -> pd.DataFrame:
+                 reg: float = 5.0, min_games: int = 200, pace_adjust: bool = False,
+                 games: pd.DataFrame | None = None, sensitivity: dict[str, float] | None = None,
+                 game_halflife_days: float = 365.0, game_reg: float = game_model.TOTAL_REG,
+                 game_min_games: int = game_model.MIN_TOTAL_GAMES) -> pd.DataFrame:
     """Predict every relevant-position game on/after `start` (not just games that clear
     QUALIFY_MIN -- see model.fit's docstring for why; scoring on the same population the
     model is now fit on keeps this a fair, consistent comparison), refitting whenever the
     (season, week) of the game under test changes. Iterates ALL relevant-position games
     chronologically (not just the test window) so the season-to-date baseline has true
     prior-season history, not just history accumulated since `start`.
+
+    pace_adjust=True additionally fits game_model.fit_score() at the same (season, week)
+    cadence as the player refit and applies pace.pace_adjust() to model_mu using that
+    game's predicted total -- requires `games` (e.g. data.load_games()'s output). Used to
+    validate the game-pace adjustment's effect on calibration before it ships as the
+    default in predict/parlay/best-bet; see
+    docs/superpowers/specs/2026-09-14-nfl-props-game-pace-adjustment-design.md. The
+    `team`/`opponent_team`/`home` fields in the output are always present (not gated on
+    pace_adjust) so calibration code can derive each row's game for a join without a
+    separate lookup.
     """
+    if pace_adjust and games is None:
+        raise ValueError("pace_adjust=True requires games (e.g. data.load_games())")
     relevant = stats[stats["position_group"].isin(model.RELEVANT_POSITIONS[stat])].sort_values("date")
     rows = []
     ratings = None
+    score_ratings = None
     fit_week = None
     season_totals: dict[str, list[float]] = {}
     last_season = None
@@ -41,15 +57,26 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
             if week_key != fit_week:
                 ratings = model.fit(stats, stat, as_of=g["date"].date(), halflife_days=halflife_days,
                                     reg=reg, min_games=min_games)
+                if pace_adjust:
+                    score_ratings = game_model.fit_score(games, as_of=g["date"].date(),
+                                                          halflife_days=game_halflife_days,
+                                                          reg=game_reg, min_games=game_min_games)
                 fit_week = week_key
             mu, sigma = model.predicted_distribution(ratings, g["player_id"], g["position_group"],
                                                       g["opponent_team"], bool(g["home"]))
+            if pace_adjust:
+                home_team = g["team"] if g["home"] else g["opponent_team"]
+                away_team = g["opponent_team"] if g["home"] else g["team"]
+                total_mu, _ = game_model.predicted_total(score_ratings, home_team, away_team)
+                league_avg_total = score_ratings.intercept * 2
+                mu = pace.pace_adjust(mu, total_mu, league_avg_total, stat, sensitivity=sensitivity)
             prior = season_totals.get(g["player_id"], [])
             base_mu = (float(np.mean(prior)) if prior
                       else ratings.position_intercept.get(g["position_group"], ratings.intercept_fallback))
             base_sigma = ratings.sigma.get(g["position_group"], ratings.sigma_global)
             rows.append({
                 "date": g["date"], "player_id": g["player_id"], "position_group": g["position_group"],
+                "team": g["team"], "opponent_team": g["opponent_team"], "home": bool(g["home"]),
                 "actual_yards": g[model.STAT_COLUMN[stat]], "y": y,
                 "model_mu": mu, "model_sigma": sigma, "base_mu": base_mu, "base_sigma": base_sigma,
             })
