@@ -190,7 +190,8 @@ def cmd_backtest(args):
             start = (stats["date"].max() - pd.Timedelta(days=365 * args.test_seasons)).date()
         preds = backtest.walk_forward(stats, stat, start, halflife_days=args.halflife, reg=args.reg,
                                       pace_adjust=args.pace_adjust, games=games,
-                                      game_halflife_days=args.game_halflife, game_reg=args.game_reg)
+                                      game_halflife_days=args.game_halflife, game_reg=args.game_reg,
+                                      wide_sigma=args.wide_sigma)
         s = backtest.summarize(preds)
         print(f"\n=== {stat}: {s['n']} predictions from {start} ===")
         print(f"NLL model {s['nll_model']:.4f} vs baseline (season-to-date average) "
@@ -482,6 +483,10 @@ def main(argv=None):
     bt.add_argument("--pace-adjust", action="store_true",
                     help="apply the game-pace adjustment (pace.pace_adjust) before scoring, "
                          "for comparison against the unadjusted model")
+    bt.add_argument("--wide-sigma", action="store_true",
+                    help="apply the low-sample QB sigma widening (model.WIDE_SIGMA_STATS) before "
+                         "scoring, for comparison against the unwidened model -- diagnostic only, "
+                         "a real-data validation gate failed for this mechanism; see model.py")
     bt.set_defaults(fn=cmd_backtest)
 
     gr = sub.add_parser("game-ratings", parents=[common], help="team power + scoring/allowed ratings")

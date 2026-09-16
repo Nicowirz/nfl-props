@@ -20,7 +20,7 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
                  reg: float = 5.0, min_games: int = 200, pace_adjust: bool = False,
                  games: pd.DataFrame | None = None, sensitivity: dict[str, float] | None = None,
                  game_halflife_days: float = 365.0, game_reg: float = game_model.TOTAL_REG,
-                 game_min_games: int = game_model.MIN_TOTAL_GAMES) -> pd.DataFrame:
+                 game_min_games: int = game_model.MIN_TOTAL_GAMES, wide_sigma: bool = False) -> pd.DataFrame:
     """Predict every relevant-position game on/after `start` (not just games that clear
     QUALIFY_MIN -- see model.fit's docstring for why; scoring on the same population the
     model is now fit on keeps this a fair, consistent comparison), refitting whenever the
@@ -37,6 +37,12 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
     `team`/`opponent_team`/`home` fields in the output are always present (not gated on
     pace_adjust) so calibration code can derive each row's game for a join without a
     separate lookup.
+
+    wide_sigma=True additionally passes `stat=stat` into model.predicted_distribution(),
+    activating model.WIDE_SIGMA_STATS' low-sample sigma widening for stats in that set
+    (currently just pass_yds) -- see model.py's comment above WIDE_SIGMA_STATS for why
+    this defaults to False and stays a diagnostic-only flag rather than the default
+    backtest behavior.
     """
     if pace_adjust and games is None:
         raise ValueError("pace_adjust=True requires games (e.g. data.load_games())")
@@ -66,7 +72,8 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
                 fit_week = week_key
             mu, sigma = model.predicted_distribution(ratings, g["player_id"], g["position_group"],
                                                       g["opponent_team"], bool(g["home"]),
-                                                      trailing_share=g.get("trailing_share"), stat=stat)
+                                                      trailing_share=g.get("trailing_share"),
+                                                      stat=stat if wide_sigma else "")
             if pace_adjust:
                 home_team = g["team"] if g["home"] else g["opponent_team"]
                 away_team = g["opponent_team"] if g["home"] else g["team"]

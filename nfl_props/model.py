@@ -55,19 +55,32 @@ SHARE_STATS = {"rec_yds", "rush_yds"}  # stats with a real usage-share covariate
 # games. A materially wider sigma compresses PIT values toward 0.5 for every low-sample
 # prediction, which shrinks the already-too-small top-decile bucket further even as it
 # improves average NLL (dominated by the bulk of ordinary predictions) and shrinks the
-# already-too-large bottom bucket. Per the plan's explicit gate, this is NOT applied in
-# predict/parlay/best-bet -- this mechanism stays tested, working, currently-inert
-# infrastructure (like pace.py's own rejected feature), not wired into any live command.
-# A narrower mechanism (capped widening, a heavier-tailed distribution instead of a
-# wider normal one, or triggering only on a documented role change) is a real candidate
-# follow-up, out of this plan's scope.
+# already-too-large bottom bucket. The top-decile gap itself was a 3-prediction
+# difference (17 vs. 20 of 693), on a data window whose baseline top-decile rate
+# (~2.5-2.9%) was already far below the ~6.6% baseline the original low-sample-blowout
+# diagnostic was built against -- so the gate result is real (criterion 2 genuinely
+# failed on this window) but should be read as "this specific window/mechanism
+# combination didn't resolve it," not as strong evidence the underlying diagnostic
+# (backup QBs having underestimated blowout games) was wrong. A narrower mechanism
+# (capped widening, a heavier-tailed distribution instead of a wider normal one, or
+# triggering only on a documented role change) is a real candidate follow-up, out of
+# this plan's scope.
+#
+# Per the plan's explicit gate, this stays inert by DEFAULT everywhere -- predict,
+# parlay, best-bet never pass `stat` into predicted_distribution(), and backtest.py's
+# walk_forward() only does so when called with wide_sigma=True (cli.py's `backtest
+# --wide-sigma` flag; off by default). This mechanism is tested, working,
+# currently-inert infrastructure (like pace.py's own rejected feature), gated behind a
+# diagnostic-only flag for anyone who wants to re-run the validation later -- not wired
+# into any live command's default behavior.
 WIDE_SIGMA_STATS = {"pass_yds"}  # stats where a low-sample player's sigma is widened,
                                  # measured from real low-sample residuals -- rec_yds/
                                  # rush_yds already calibrate correctly at the top decile
                                  # (confirmed live 2026-09-16) and are deliberately absent.
                                  # NOTE: as calibrated, this does not currently improve
-                                 # top-decile calibration (see comment above) and is not
-                                 # applied in any live command -- see the gate result.
+                                 # top-decile calibration (see comment above) and is only
+                                 # ever activated via `backtest --wide-sigma` -- see the
+                                 # gate result.
 
 OFFSET = 10.0             # log(yards + OFFSET) stays finite even for a slightly negative rushing game
 NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-sample in output

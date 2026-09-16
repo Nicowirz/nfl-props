@@ -229,7 +229,7 @@ def test_walk_forward_widens_sigma_for_low_sample_qb():
                     })
     df = pd.DataFrame(rows)
     start = df["date"].iloc[-1].date() - pd.Timedelta(days=1)
-    preds = backtest.walk_forward(df, "pass_yds", start, reg=0.05, min_games=50)
+    preds = backtest.walk_forward(df, "pass_yds", start, reg=0.05, min_games=50, wide_sigma=True)
     low_sigma_preds = preds[preds["player_id"].str.startswith("LOW")]
     normal_sigma_preds = preds[preds["player_id"].str.startswith("NORMAL")]
     assert not low_sigma_preds.empty and not normal_sigma_preds.empty

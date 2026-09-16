@@ -446,9 +446,12 @@ def test_fit_recovers_wider_sigma_for_low_sample_players():
     assert abs(r.sigma_low_sample["QB"] - true_low_sigma) < 0.3
 
 
-def test_fit_sigma_low_sample_falls_back_when_group_too_thin():
+def test_fit_sigma_low_sample_empty_for_stat_outside_wide_sigma_stats():
     # rush_yds is NOT in WIDE_SIGMA_STATS -- sigma_low_sample must be empty regardless
-    # of how the data looks.
+    # of how the data looks. (Despite its former name, this test does not exercise any
+    # fallback branch -- the real fallback-branch tests are
+    # test_fit_sigma_low_sample_uses_group_sigma_when_low_sample_pool_too_thin and
+    # test_fit_sigma_low_sample_uses_sigma_global_when_group_itself_too_thin below.)
     df, *_ = _synthetic_wide_sigma()
     # drop the helper's always-zero "rushing_yards" column first -- renaming onto it
     # without dropping would leave two columns both named "rushing_yards" (pandas allows
@@ -462,17 +465,31 @@ def test_fit_sigma_low_sample_falls_back_when_group_too_thin():
     assert r.sigma_low_sample == {}
 
 
-def test_fit_byte_identical_output_when_stat_not_in_wide_sigma_stats():
+def test_fit_byte_identical_output_when_stat_not_in_wide_sigma_stats(monkeypatch):
     # A stat outside WIDE_SIGMA_STATS must produce IDENTICAL fit() output to before this
-    # change -- direct regression guard, not just a new-feature test.
+    # feature existed -- direct regression guard, not just a new-feature test. Fit the
+    # same synthetic data twice for rec_yds (not in WIDE_SIGMA_STATS): once with
+    # WIDE_SIGMA_STATS monkeypatched to empty (simulating "this feature never existed")
+    # and once with the real, current WIDE_SIGMA_STATS -- then assert the resulting
+    # Ratings' sigma/ability/position_intercept dicts compare exactly equal. Asserting
+    # sigma_low_sample == {} alone (the old version of this test) doesn't prove
+    # byte-identity -- it only proves the widening branch itself is a no-op for this
+    # stat, not that nothing else about the fit shifted.
     df, *_ = _synthetic_wide_sigma()
     # same duplicate-column pitfall as the RB test above: drop the helper's always-zero
     # "receiving_yards" column before renaming onto it.
     df2 = df.drop(columns=["receiving_yards"]).rename(columns={"passing_yards": "receiving_yards"})
     df2["targets"] = df2["attempts"]
-    r = model.fit(df2, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
-    assert r.sigma_low_sample == {}
-    assert r.sigma_global > 0  # unaffected, still computed normally
+
+    monkeypatch.setattr(model, "WIDE_SIGMA_STATS", set())
+    r_without = model.fit(df2, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    monkeypatch.undo()  # restore the real WIDE_SIGMA_STATS before the second fit
+    r_with = model.fit(df2, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
+
+    assert r_without.sigma_low_sample == {} and r_with.sigma_low_sample == {}
+    assert r_without.sigma == r_with.sigma
+    assert r_without.ability == r_with.ability
+    assert r_without.position_intercept == r_with.position_intercept
 
 
 def test_fit_sigma_low_sample_uses_group_sigma_when_low_sample_pool_too_thin():
