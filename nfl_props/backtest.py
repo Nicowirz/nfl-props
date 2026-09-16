@@ -66,7 +66,7 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
                 fit_week = week_key
             mu, sigma = model.predicted_distribution(ratings, g["player_id"], g["position_group"],
                                                       g["opponent_team"], bool(g["home"]),
-                                                      trailing_share=g.get("trailing_share"))
+                                                      trailing_share=g.get("trailing_share"), stat=stat)
             if pace_adjust:
                 home_team = g["team"] if g["home"] else g["opponent_team"]
                 away_team = g["opponent_team"] if g["home"] else g["team"]

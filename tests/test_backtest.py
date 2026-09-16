@@ -190,3 +190,47 @@ def test_walk_forward_beats_baseline_with_share_signal():
     preds = backtest.walk_forward(df, "rec_yds", start, reg=0.05, min_games=50)
     s = backtest.summarize(preds)
     assert s["nll_model"] < s["nll_baseline"]
+
+
+def test_walk_forward_widens_sigma_for_low_sample_qb():
+    rng = np.random.default_rng(17)
+    rows = []
+    d = pd.Timestamp("2024-09-05")
+    normal_sigma, low_sigma = 0.30, 0.70
+    for week in range(1, 31):
+        wk_date = d + pd.Timedelta(weeks=week - 1)
+        for i in range(15):
+            # LOW players appear in exactly 4 weeks (27, 28, 29, 30) -- by week 30 (the
+            # only week scored, given `start` below) each has exactly 3 PRIOR games
+            # (weeks 27-29, strictly before week 30's as_of cutoff in model.fit()),
+            # correctly below NEW_PLAYER_GAMES(4) and so classified low-sample. Week 30
+            # itself is also included so each LOW player actually HAS a game in the
+            # scored week -- without it (an earlier draft used 27 <= week <= 29, i.e. no
+            # week-30 row at all) `start`'s window would contain zero LOW rows and
+            # low_sigma_preds would come back empty rather than merely equal, since
+            # `start` selects only week 30 (see below). 15 LOW players * 3 prior rows
+            # each = 45 low-sample residual rows feed sigma_low_sample's own computation
+            # (fit()'s game_counts/residual pool only sees rows strictly before as_of, so
+            # the week-30 row doesn't add to that count), comfortably clearing
+            # MIN_GROUP_RESIDUALS(30) with real margin (a prior version of a similar
+            # fixture landed exactly on the 30-row boundary, which is too fragile to
+            # trust).
+            n_games = 1 if 27 <= week <= 30 else 0
+            for pname, sigma, n in ((f"NORMAL{i}", normal_sigma, 1), (f"LOW{i}", low_sigma, n_games)):
+                for _ in range(n):
+                    home = bool(rng.integers(0, 2))
+                    mu = 4.6 + (0.05 if home else 0.0)
+                    yards = max(0.0, np.exp(rng.normal(mu, sigma)) - 10.0)
+                    rows.append({
+                        "player_id": pname, "player_name": pname, "position_group": "QB",
+                        "team": "A", "opponent_team": f"T{i}", "date": wk_date, "home": home,
+                        "season": 2024, "week": week, "passing_yards": yards, "attempts": 25.0,
+                        "receiving_yards": 0.0, "targets": 0.0, "rushing_yards": 0.0, "carries": 0.0,
+                    })
+    df = pd.DataFrame(rows)
+    start = df["date"].iloc[-1].date() - pd.Timedelta(days=1)
+    preds = backtest.walk_forward(df, "pass_yds", start, reg=0.05, min_games=50)
+    low_sigma_preds = preds[preds["player_id"].str.startswith("LOW")]
+    normal_sigma_preds = preds[preds["player_id"].str.startswith("NORMAL")]
+    assert not low_sigma_preds.empty and not normal_sigma_preds.empty
+    assert low_sigma_preds["model_sigma"].mean() > normal_sigma_preds["model_sigma"].mean()
