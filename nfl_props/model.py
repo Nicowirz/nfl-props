@@ -43,10 +43,31 @@ SHARE_STATS = {"rec_yds", "rush_yds"}  # stats with a real usage-share covariate
                                        # (targets for rec_yds, carries for rush_yds) --
                                        # pass_yds has no analog and is deliberately absent.
 
+# Validated against real 3-season data, 2026-09-16, 1-year backtest lookback, n=693 both
+# arms (a true apples-to-apples comparison: WIDE_SIGMA_STATS temporarily disabled
+# in-process to get a WITHOUT baseline on the identical data window, since a stale
+# README snapshot at a different n is not a valid comparison). GATE FAILED:
+#   NLL              1.3020 -> 1.2374  (~5% better -- criterion 1 PASSES)
+#   top-decile bucket  2.89% -> 2.45%  (moved AWAY from the 10% target -- criterion 2 FAILS)
+# Root cause: sigma_low_sample["QB"] came back 65% wider than the normal sigma["QB"]
+# (1.3249 vs 0.7998 in one snapshot fit), affecting 29% of QBs (24/83) in that fit --
+# a large, broadly-applied effect, not a narrow one targeting only genuine blowout
+# games. A materially wider sigma compresses PIT values toward 0.5 for every low-sample
+# prediction, which shrinks the already-too-small top-decile bucket further even as it
+# improves average NLL (dominated by the bulk of ordinary predictions) and shrinks the
+# already-too-large bottom bucket. Per the plan's explicit gate, this is NOT applied in
+# predict/parlay/best-bet -- this mechanism stays tested, working, currently-inert
+# infrastructure (like pace.py's own rejected feature), not wired into any live command.
+# A narrower mechanism (capped widening, a heavier-tailed distribution instead of a
+# wider normal one, or triggering only on a documented role change) is a real candidate
+# follow-up, out of this plan's scope.
 WIDE_SIGMA_STATS = {"pass_yds"}  # stats where a low-sample player's sigma is widened,
                                  # measured from real low-sample residuals -- rec_yds/
                                  # rush_yds already calibrate correctly at the top decile
                                  # (confirmed live 2026-09-16) and are deliberately absent.
+                                 # NOTE: as calibrated, this does not currently improve
+                                 # top-decile calibration (see comment above) and is not
+                                 # applied in any live command -- see the gate result.
 
 OFFSET = 10.0             # log(yards + OFFSET) stays finite even for a slightly negative rushing game
 NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-sample in output
