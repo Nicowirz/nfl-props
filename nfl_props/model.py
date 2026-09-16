@@ -43,6 +43,11 @@ SHARE_STATS = {"rec_yds", "rush_yds"}  # stats with a real usage-share covariate
                                        # (targets for rec_yds, carries for rush_yds) --
                                        # pass_yds has no analog and is deliberately absent.
 
+WIDE_SIGMA_STATS = {"pass_yds"}  # stats where a low-sample player's sigma is widened,
+                                 # measured from real low-sample residuals -- rec_yds/
+                                 # rush_yds already calibrate correctly at the top decile
+                                 # (confirmed live 2026-09-16) and are deliberately absent.
+
 OFFSET = 10.0             # log(yards + OFFSET) stays finite even for a slightly negative rushing game
 NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-sample in output
 MIN_GROUP_RESIDUALS = 30  # fewer residuals than this in a position group -> fall back to sigma_global
@@ -167,6 +172,7 @@ class Ratings:
     home_field: float
     sigma: dict[str, float]
     sigma_global: float
+    sigma_low_sample: dict[str, float]  # per position group, for WIDE_SIGMA_STATS only; {} otherwise
     as_of: date
     n_games: int
     game_counts: dict[str, int]
@@ -274,16 +280,30 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
         if mask.sum() >= MIN_GROUP_RESIDUALS:
             sigma[g] = float(np.sqrt(np.average(resid[mask] ** 2, weights=w[mask])))
 
+    game_counts = df["player_id"].value_counts().to_dict()
+
+    sigma_low_sample: dict[str, float] = {}
+    if stat in WIDE_SIGMA_STATS:
+        is_low_sample = df["player_id"].map(game_counts).to_numpy() < NEW_PLAYER_GAMES
+        for g in np.unique(group):
+            mask = (group == g) & is_low_sample
+            if mask.sum() >= MIN_GROUP_RESIDUALS:
+                sigma_low_sample[g] = float(np.sqrt(np.average(resid[mask] ** 2, weights=w[mask])))
+            elif g in sigma:
+                sigma_low_sample[g] = sigma[g]
+            else:
+                sigma_low_sample[g] = sigma_global
+
     player_name = df.drop_duplicates("player_id").set_index("player_id")["player_name"].to_dict()
     position_group = df.drop_duplicates("player_id").set_index("player_id")["position_group"].to_dict()
-    game_counts = df["player_id"].value_counts().to_dict()
 
     return Ratings(
         stat=stat, players=players, player_name=player_name, position_group=position_group,
         ability=ability, teams=teams, defense=defense,
         position_intercept=position_intercept, intercept_fallback=intercept_fallback,
         share_coef=share_coef, share_fallback=share_fallback,
-        home_field=home_field, sigma=sigma, sigma_global=sigma_global, as_of=as_of,
+        home_field=home_field, sigma=sigma, sigma_global=sigma_global,
+        sigma_low_sample=sigma_low_sample, as_of=as_of,
         n_games=n, game_counts=game_counts,
     )
 
