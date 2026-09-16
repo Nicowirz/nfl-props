@@ -501,3 +501,40 @@ def test_fit_sigma_low_sample_uses_sigma_global_when_group_itself_too_thin():
     r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=10)
     assert "QB" not in r.sigma  # confirms the elif branch cannot have fired
     assert r.sigma_low_sample["QB"] == r.sigma_global
+
+
+def test_predicted_distribution_uses_sigma_low_sample_for_low_sample_player():
+    df, true_normal_sigma, true_low_sigma = _synthetic_wide_sigma()
+    r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    _, sigma_low = model.predicted_distribution(r, "LOW0", "QB", "T0", True, stat="pass_yds")
+    _, sigma_normal = model.predicted_distribution(r, "NORMAL0", "QB", "T0", True, stat="pass_yds")
+    assert sigma_low == pytest.approx(r.sigma_low_sample["QB"])
+    assert sigma_normal == pytest.approx(r.sigma["QB"])
+    assert sigma_low > sigma_normal
+
+
+def test_predicted_distribution_unknown_player_counts_as_low_sample():
+    df, *_ = _synthetic_wide_sigma()
+    r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    _, sigma = model.predicted_distribution(r, "totally-unknown-id", "QB", "T0", True, stat="pass_yds")
+    assert sigma == pytest.approx(r.sigma_low_sample["QB"])
+
+
+def test_predicted_distribution_ignores_wide_sigma_without_stat_argument():
+    # Omitting `stat` must reproduce today's EXACT behavior -- this is what lets
+    # backtest.py (Task 3) be updated ahead of cli.py (Task 5) without cli.py breaking.
+    df, *_ = _synthetic_wide_sigma()
+    r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    _, sigma_default = model.predicted_distribution(r, "LOW0", "QB", "T0", True)
+    assert sigma_default == pytest.approx(r.sigma["QB"])  # NOT sigma_low_sample
+
+
+def test_predicted_distribution_stat_outside_wide_sigma_stats_unaffected():
+    df, *_ = _synthetic_wide_sigma()
+    # same duplicate-column pitfall documented above: drop the helper's always-zero
+    # "receiving_yards" column before renaming onto it.
+    df2 = df.drop(columns=["receiving_yards"]).rename(columns={"passing_yards": "receiving_yards"})
+    df2["targets"] = df2["attempts"]
+    r = model.fit(df2, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    _, sigma = model.predicted_distribution(r, "LOW0", "QB", "T0", True, stat="rec_yds")
+    assert sigma == pytest.approx(r.sigma["QB"])

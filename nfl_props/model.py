@@ -309,7 +309,8 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
 
 
 def predicted_distribution(r: Ratings, player_id: str, position_group: str, opponent_team: str,
-                           home: bool, trailing_share: float | None = None) -> tuple[float, float]:
+                           home: bool, trailing_share: float | None = None,
+                           stat: str = "") -> tuple[float, float]:
     """(mu, sigma) of log(yards + OFFSET) for a player-game. Unknown players get their
     position group's average ability (0.0, relative to that group's own intercept) and
     are flagged in `r.prior_players`, same treatment epl-parlay gives a club with no
@@ -322,6 +323,12 @@ def predicted_distribution(r: Ratings, player_id: str, position_group: str, oppo
     position group's fitted average trailing_share (`r.share_fallback`) is used instead
     -- the same "assume average when we don't know" treatment ability already gets for
     an unknown player.
+
+    `stat` selects a widened `sigma_low_sample` for a low-sample player (fewer than
+    NEW_PLAYER_GAMES games at fit time, including an entirely unknown player) when
+    `stat in WIDE_SIGMA_STATS` -- omitting `stat` (the default, "") never matches
+    WIDE_SIGMA_STATS, reproducing the exact sigma this function always returned before
+    this parameter existed.
     """
     ability = r.ability.get(player_id)
     if ability is None:
@@ -335,5 +342,8 @@ def predicted_distribution(r: Ratings, player_id: str, position_group: str, oppo
         effective_share = (trailing_share if trailing_share is not None
                            else r.share_fallback.get(position_group, 0.0))
         mu += r.share_coef * effective_share
-    sigma = r.sigma.get(position_group, r.sigma_global)
+    if stat in WIDE_SIGMA_STATS and r.game_counts.get(player_id, 0) < NEW_PLAYER_GAMES:
+        sigma = r.sigma_low_sample.get(position_group, r.sigma.get(position_group, r.sigma_global))
+    else:
+        sigma = r.sigma.get(position_group, r.sigma_global)
     return mu, sigma
