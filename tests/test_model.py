@@ -433,10 +433,16 @@ def test_fit_recovers_wider_sigma_for_low_sample_players():
     # ~0.50, not 0.70). Verified this is a structural bias, not sampling noise: it does
     # NOT shrink as n_low_players grows from 20 to 400 (stays ~0.50-0.53), and DOES shrink
     # as `reg` is raised (0.05 -> ~0.50, 1.0 -> ~0.53, 5.0 -> ~0.62, 20.0 -> ~0.68) --
-    # confirmed live 2026-09-16. 0.3 still requires sigma_low_sample to sit unambiguously
-    # closer to true_low_sigma (0.7) than to true_normal_sigma (0.3), so the assertion
-    # keeps its meaning; it just stops asserting a point-estimate precision this specific
-    # (reg, games-per-low-player) combination cannot deliver.
+    # confirmed live 2026-09-16. 0.3 is NOT tight enough to guarantee sigma_low_sample
+    # lands strictly closer to true_low_sigma than to true_normal_sigma -- e.g. 0.40 would
+    # pass this bound while sitting closer to 0.30 (distance 0.10) than to 0.70 (distance
+    # 0.30), and the actual measured value for this fixture's default seed (0.474) is
+    # itself closer to true_normal_sigma (|0.474-0.30|=0.174) than to true_low_sigma
+    # (|0.474-0.70|=0.226). The bound's real job is narrower: it's wide enough to absorb
+    # both the diagnosed ~0.50 asymptotic bias and the seed-to-seed sampling noise observed
+    # across 6 seeds (0.37-0.60) without being vacuous (sigma_low_sample - sigma["QB"] is
+    # already asserted separately above), and it still fails if the feature stops widening
+    # sigma at all.
     assert abs(r.sigma_low_sample["QB"] - true_low_sigma) < 0.3
 
 
@@ -467,3 +473,31 @@ def test_fit_byte_identical_output_when_stat_not_in_wide_sigma_stats():
     r = model.fit(df2, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
     assert r.sigma_low_sample == {}
     assert r.sigma_global > 0  # unaffected, still computed normally
+
+
+def test_fit_sigma_low_sample_uses_group_sigma_when_low_sample_pool_too_thin():
+    # The default _synthetic_wide_sigma() fixture always clears MIN_GROUP_RESIDUALS(30)
+    # for the low-sample mask (20 players * 2 games = 40), so it never exercises fit()'s
+    # `elif g in sigma: sigma_low_sample[g] = sigma[g]` fallback. Shrink the low-sample
+    # pool to 5 players * 2 games = 10 rows (< 30) while keeping the normal pool large
+    # (20 players * 14 games = 280 rows, >= 30) so the group's own `sigma["QB"]` IS
+    # computed and available as the fallback target.
+    df, *_ = _synthetic_wide_sigma(n_normal_players=20, n_low_players=5, games_per_normal=14)
+    n_low_rows = (df["player_id"].str.startswith("LOW")).sum()
+    assert n_low_rows < model.MIN_GROUP_RESIDUALS  # sanity: confirms the mask this test
+                                                    # relies on actually stays below threshold
+    r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    assert "QB" in r.sigma  # group-level sigma must exist for the fallback to be meaningful
+    assert r.sigma_low_sample["QB"] == r.sigma["QB"]
+
+
+def test_fit_sigma_low_sample_uses_sigma_global_when_group_itself_too_thin():
+    # Push the WHOLE QB group (not just its low-sample slice) below MIN_GROUP_RESIDUALS(30)
+    # rows, so fit()'s own `sigma["QB"]` is never computed either -- this must fall all the
+    # way through to fit()'s last resort, `sigma_low_sample[g] = sigma_global`.
+    df, *_ = _synthetic_wide_sigma(n_normal_players=2, n_low_players=3, games_per_normal=5)
+    assert len(df) < model.MIN_GROUP_RESIDUALS  # sanity: whole group, not just the low
+                                                 # slice, stays below threshold
+    r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=10)
+    assert "QB" not in r.sigma  # confirms the elif branch cannot have fired
+    assert r.sigma_low_sample["QB"] == r.sigma_global
