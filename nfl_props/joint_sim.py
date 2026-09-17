@@ -18,11 +18,42 @@ from .model import OFFSET
 
 N_DRAWS = 10_000
 
-# Calibrated via calibrate_joint_sensitivity() (Task 2) against real 3-season data --
-# see that function and Tasks 4/5 of docs/superpowers/plans/2026-09-17-nfl-props-
-# joint-correlation-sim.md for how these get populated. Starts at 0.0 (a true no-op) so
-# this module's own tests are meaningful before calibration has run.
-JOINT_SENSITIVITY: dict[str, float] = {"pass_yds": 0.0, "rush_yds": 0.0, "rec_yds": 0.0}
+# Calibrated via calibrate_joint_sensitivity() (Task 2) against real 3-season cached
+# nflverse data -- see that function and Tasks 4/5 of docs/superpowers/plans/2026-09-17-
+# nfl-props-joint-correlation-sim.md for how these get populated. Starts at 0.0 (a true
+# no-op) so this module's own tests are meaningful before calibration has run.
+#
+# Run 2026-09-17 (Task 4, Step 7): data.load_player_stats(3) / data.load_games(),
+# start = (stats["date"].max() - timedelta(days=365)).date() = 2025-09-14
+# (stats["date"].max() = 2026-09-14):
+#   pass_yds: 0.030194480744343055 -> 0.030
+#   rush_yds: 0.023558369202182485 -> 0.024
+#
+# Task 4, Step 8 -- real Gate 1 check (check_correlation_direction(stats, games, start)
+# with the above sensitivities, 1-year window, default n=1000): n_pairs=578 (well above
+# the ~20 floor, no window widening needed), real_corr=-0.0274 (deterministic -- real
+# walk-forward data has no RNG). simulated_corr is NOT reproducible at the default
+# n=1000: 4 consecutive runs of the exact brief command gave -0.1209, +0.0530, +0.0396,
+# -0.0214 -- the sign itself flips run to run because check_correlation_direction never
+# seeds simulate_player_yards, and the true per-pair signal is tiny relative to n=1000's
+# Monte Carlo noise. A diagnostic-only rerun with n=50000 (same data/sensitivities, just
+# less MC noise; not a parameter search for a passing result) converges to a stable
+# simulated_corr=+0.0279 -- OPPOSITE SIGN from real_corr, and both magnitudes are
+# negligibly close to zero (~0.03). GATE 1 FAILED on both prongs of the stated
+# criterion: simulated_corr is not a reproducible non-negligible signal, and even its
+# denoised value has the wrong sign. This is exactly the risk anticipated in Task 4's
+# brief: the shared shock here is built from the game's TOTAL deviation, and pace.py's
+# own calibrated sensitivities are both positive relative to total for pass_yds and
+# rush_yds, so a shared total-based shock structurally pushes a QB's passing and his
+# team's leading rusher's rushing in the SAME direction, while the real-world effect is
+# a game-script/margin effect (weakly negative empirically here). Per the brief: Task 5
+# does NOT proceed on this result. A follow-up using game_model.predicted_margin instead
+# of (or alongside) total deviation is a plausible fix but is a separate design change
+# requiring its own sign-off -- not applied here. pass_yds/rush_yds above are still the
+# real calibrated-against-total values (this module's own calibration, kept independent
+# of pace.py's SENSITIVITY per calibrate_joint_sensitivity()'s docstring), not tuned or
+# cherry-picked to pass the gate.
+JOINT_SENSITIVITY: dict[str, float] = {"pass_yds": 0.030, "rush_yds": 0.024, "rec_yds": 0.0}
 
 
 def simulate_player_yards(total_mu: float, total_sigma: float, league_avg_total: float,
