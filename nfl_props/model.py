@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 
 STAT_COLUMN = {"pass_yds": "passing_yards", "rush_yds": "rushing_yards", "rec_yds": "receiving_yards"}
-QUALIFY_COLUMN = {"pass_yds": "attempts", "rush_yds": "carries", "rec_yds": "targets"}
+QUALIFY_COLUMN = {"pass_yds": "attempts", "rush_yds": "carries", "rec_yds": "targets",
+                  "receptions": "targets"}  # reused by rate_model.py's usage-share covariate
 QUALIFY_MIN = {"pass_yds": 10, "rush_yds": 5, "rec_yds": 2}
 # position_group values that can plausibly produce this stat -- verified live 2026-09-13
 # against real data. Bounds which players/rows enter the fit (a defensive lineman's rows
