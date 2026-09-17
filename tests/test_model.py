@@ -446,21 +446,42 @@ def test_fit_recovers_wider_sigma_for_low_sample_players():
     assert abs(r.sigma_low_sample["QB"] - true_low_sigma) < 0.3
 
 
-def test_fit_sigma_excludes_low_sample_rows_from_normal_pool():
-    # Regression test for the sigma-pool-contamination bug: sigma["QB"] (the "normal"
-    # pool) must be computed ONLY from normal-sample players' residuals -- not from the
-    # SAME rows sigma_low_sample separately draws from. _synthetic_wide_sigma()'s
-    # defaults (0.30 vs 0.70, 40-of-320 low rows) don't move sigma["QB"] far enough to
-    # unambiguously distinguish contaminated vs. clean under test 1's existing 0.1
-    # tolerance, so this uses a much larger sigma disparity: if contamination were
-    # present, mixing in the 40 low-sample rows (true sigma 1.20) would pull the
-    # mixture estimate to roughly sqrt((280*0.20**2 + 40*1.20**2) / 320) =~ 0.46, far
-    # outside a tight bound around the true normal-only value (0.20).
+def test_fit_sigma_normal_only_excludes_low_sample_rows():
+    # Regression test for the sigma-pool-contamination bug: sigma_normal_only["QB"] must
+    # be computed ONLY from normal-sample players' residuals -- not from the SAME rows
+    # sigma_low_sample separately draws from. `sigma` itself (the always-on, default
+    # value every non-wide-sigma caller reads) is DELIBERATELY left contaminated/
+    # unconditional -- see test_fit_sigma_unconditional_is_unaffected_by_wide_sigma
+    # below for that guarantee; sigma_normal_only is the new, additional, opt-in-only
+    # clean value this bug fix introduces.
+    # _synthetic_wide_sigma()'s defaults (0.30 vs 0.70, 40-of-320 low rows) don't move
+    # the mixture far enough to unambiguously distinguish contaminated vs. clean under
+    # test 1's existing 0.1 tolerance, so this uses a much larger sigma disparity: a
+    # CONTAMINATED estimate here would land near sqrt((280*0.20**2 + 40*1.20**2) / 320)
+    # =~ 0.46, far outside a tight bound around the true normal-only value (0.20).
     df, true_normal_sigma, true_low_sigma = _synthetic_wide_sigma(
         n_normal_players=20, n_low_players=20, normal_sigma=0.20, low_sigma=1.20,
         games_per_normal=14)
     r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
-    assert abs(r.sigma["QB"] - true_normal_sigma) < 0.08
+    assert abs(r.sigma_normal_only["QB"] - true_normal_sigma) < 0.08
+
+
+def test_fit_sigma_unconditional_is_unaffected_by_wide_sigma():
+    # The DEFAULT `sigma` dict -- what every non-wide-sigma caller (predict, parlay,
+    # best-bet, and plain `backtest`) actually reads -- must stay exactly what it always
+    # was: computed from EVERY row of the group, low-sample rows included, regardless of
+    # WIDE_SIGMA_STATS. This is the inertness guarantee the contamination fix must not
+    # break: fixing sigma_normal_only must never silently change live default behavior.
+    # Uses the same large-disparity fixture as the test above so contamination (if it
+    # leaked into `sigma`) would be unambiguous.
+    df, true_normal_sigma, true_low_sigma = _synthetic_wide_sigma(
+        n_normal_players=20, n_low_players=20, normal_sigma=0.20, low_sigma=1.20,
+        games_per_normal=14)
+    r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    # a genuinely mixed (contaminated) estimate over 280 normal (0.20) + 40 low (1.20)
+    # rows lands close to 0.46 -- far outside a tight bound around the pure normal value,
+    # confirming `sigma["QB"]` is still the full, unconditional population estimate.
+    assert abs(r.sigma["QB"] - true_normal_sigma) > 0.08
 
 
 def test_fit_sigma_low_sample_empty_for_stat_outside_wide_sigma_stats():
@@ -504,25 +525,27 @@ def test_fit_byte_identical_output_when_stat_not_in_wide_sigma_stats(monkeypatch
     r_with = model.fit(df2, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
 
     assert r_without.sigma_low_sample == {} and r_with.sigma_low_sample == {}
+    assert r_without.sigma_normal_only == {} and r_with.sigma_normal_only == {}
     assert r_without.sigma == r_with.sigma
     assert r_without.ability == r_with.ability
     assert r_without.position_intercept == r_with.position_intercept
 
 
-def test_fit_sigma_low_sample_uses_group_sigma_when_low_sample_pool_too_thin():
+def test_fit_sigma_low_sample_uses_normal_only_when_low_sample_pool_too_thin():
     # The default _synthetic_wide_sigma() fixture always clears MIN_GROUP_RESIDUALS(30)
     # for the low-sample mask (20 players * 2 games = 40), so it never exercises fit()'s
-    # `elif g in sigma: sigma_low_sample[g] = sigma[g]` fallback. Shrink the low-sample
-    # pool to 5 players * 2 games = 10 rows (< 30) while keeping the normal pool large
-    # (20 players * 14 games = 280 rows, >= 30) so the group's own `sigma["QB"]` IS
-    # computed and available as the fallback target.
+    # `elif g in sigma_normal_only: sigma_low_sample[g] = sigma_normal_only[g]` fallback.
+    # Shrink the low-sample pool to 5 players * 2 games = 10 rows (< 30) while keeping
+    # the normal pool large (20 players * 14 games = 280 rows, >= 30) so
+    # `sigma_normal_only["QB"]` IS computed and available as the fallback target -- the
+    # fallback prefers this CLEAN value over the contaminated `sigma["QB"]`.
     df, *_ = _synthetic_wide_sigma(n_normal_players=20, n_low_players=5, games_per_normal=14)
     n_low_rows = (df["player_id"].str.startswith("LOW")).sum()
     assert n_low_rows < model.MIN_GROUP_RESIDUALS  # sanity: confirms the mask this test
                                                     # relies on actually stays below threshold
     r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
-    assert "QB" in r.sigma  # group-level sigma must exist for the fallback to be meaningful
-    assert r.sigma_low_sample["QB"] == r.sigma["QB"]
+    assert "QB" in r.sigma_normal_only  # the clean fallback target must exist
+    assert r.sigma_low_sample["QB"] == r.sigma_normal_only["QB"]
 
 
 def test_fit_sigma_low_sample_uses_sigma_global_when_group_itself_too_thin():
@@ -543,7 +566,7 @@ def test_predicted_distribution_uses_sigma_low_sample_for_low_sample_player():
     _, sigma_low = model.predicted_distribution(r, "LOW0", "QB", "T0", True, stat="pass_yds")
     _, sigma_normal = model.predicted_distribution(r, "NORMAL0", "QB", "T0", True, stat="pass_yds")
     assert sigma_low == pytest.approx(r.sigma_low_sample["QB"])
-    assert sigma_normal == pytest.approx(r.sigma["QB"])
+    assert sigma_normal == pytest.approx(r.sigma_normal_only["QB"])
     assert sigma_low > sigma_normal
 
 

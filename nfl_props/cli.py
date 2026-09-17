@@ -72,7 +72,7 @@ def cmd_predict(args):
                     ts = (model.current_trailing_share(stats, stat, p["player_id"], halflife_days=args.halflife)
                          if stat in model.SHARE_STATS else None)
                     mu, sigma = model.predicted_distribution(r, p["player_id"], p["position"], opp, home,
-                                                             trailing_share=ts)
+                                                             trailing_share=ts, stat=stat)
                     med = median_yards(mu)
                     if pd.isna(med):
                         # Upstream model.fit() can produce NaN ratings for a stat if a
@@ -124,7 +124,7 @@ def _mu_sigma_for_legs(legs: list[Leg], stats: pd.DataFrame, roster: pd.DataFram
         ts = (model.current_trailing_share(stats, lg.stat, row["player_id"], halflife_days=args.halflife)
              if lg.stat in model.SHARE_STATS else None)
         mu, sigma = model.predicted_distribution(r, row["player_id"], row["position"], opp, home,
-                                                 trailing_share=ts)
+                                                 trailing_share=ts, stat=lg.stat)
         out[(lg.player, lg.stat)] = (mu, sigma)
     return out
 
