@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from nfl_props import joint_sim
@@ -84,3 +85,59 @@ def test_calibrate_joint_sensitivity_delegates_to_pace(monkeypatch):
                                                     halflife_days=90.0)
     assert result == 0.123
     assert captured["args"] == ("STATS", "GAMES", "rush_yds", "2024-10-01", {"halflife_days": 90.0})
+
+
+def _stat_row(game_id, team, opp, date, player_id, position_group, home,
+             attempts=0.0, carries=0.0):
+    return {
+        "game_id": game_id, "team": team, "opponent_team": opp, "date": date,
+        "player_id": player_id, "position_group": position_group, "home": home,
+        "attempts": attempts, "carries": carries,
+    }
+
+
+def test_qb_leading_rusher_pairs_finds_the_real_pair():
+    rows = [
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "QB_A", "QB", True, attempts=30),
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "RB1_A", "RB", True, carries=15),
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "RB2_A", "RB", True, carries=4),
+        _stat_row("g1", "B", "A", pd.Timestamp("2024-09-01"), "QB_B", "QB", False, attempts=25),
+        _stat_row("g1", "B", "A", pd.Timestamp("2024-09-01"), "RB1_B", "RB", False, carries=10),
+    ]
+    df = pd.DataFrame(rows)
+    pairs = joint_sim.qb_leading_rusher_pairs(df)
+    assert len(pairs) == 2
+    team_a = pairs[pairs["team"] == "A"].iloc[0]
+    assert team_a["qb_player_id"] == "QB_A"
+    assert team_a["rusher_player_id"] == "RB1_A"  # 15 carries beats RB2_A's 4
+    assert team_a["rusher_carries"] == 15
+
+
+def test_qb_leading_rusher_pairs_excludes_sub_qualifying_qb():
+    rows = [
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "QB_A", "QB", True, attempts=3),  # < QUALIFY_MIN
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "RB1_A", "RB", True, carries=15),
+    ]
+    df = pd.DataFrame(rows)
+    pairs = joint_sim.qb_leading_rusher_pairs(df)
+    assert len(pairs) == 0
+
+
+def test_qb_leading_rusher_pairs_excludes_when_qb_is_also_leading_rusher():
+    rows = [
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "QB_A", "QB", True, attempts=30, carries=12),
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "RB1_A", "RB", True, carries=4),
+    ]
+    df = pd.DataFrame(rows)
+    pairs = joint_sim.qb_leading_rusher_pairs(df)
+    assert len(pairs) == 0  # the QB himself has more carries than any teammate -- no valid pair
+
+
+def test_qb_leading_rusher_pairs_excludes_team_with_no_qualifying_rusher():
+    rows = [
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "QB_A", "QB", True, attempts=30),
+        _stat_row("g1", "A", "B", pd.Timestamp("2024-09-01"), "RB1_A", "RB", True, carries=0),
+    ]
+    df = pd.DataFrame(rows)
+    pairs = joint_sim.qb_leading_rusher_pairs(df)
+    assert len(pairs) == 0

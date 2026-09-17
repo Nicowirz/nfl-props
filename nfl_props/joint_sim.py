@@ -73,3 +73,32 @@ def calibrate_joint_sensitivity(stats, games, stat: str, start, **kwargs) -> flo
     """
     from . import pace
     return pace.calibrate_sensitivity(stats, games, stat, start, **kwargs)
+
+
+def qb_leading_rusher_pairs(stats) -> "pd.DataFrame":
+    """One row per (game_id, team) where a real, qualifying starting QB (attempts >=
+    QUALIFY_MIN['pass_yds']) and a real leading rusher (max carries > 0 among that same
+    team's RELEVANT_POSITIONS['rush_yds'] teammates in that SAME actual game) both
+    appear and are two DIFFERENT players. Selecting which real players to examine for an
+    already-completed game is not leakage -- each player's own future prediction still
+    only uses data strictly before that game's date; only WHICH players to look at uses
+    real, already-known game participants -- standard backtest evaluation practice, the
+    same as every other walk-forward row in this project.
+
+    Columns: game_id, date, team, opponent_team, home (bool, for this team), qb_player_id,
+    qb_attempts, rusher_player_id, rusher_carries.
+    """
+    from .model import QUALIFY_MIN, RELEVANT_POSITIONS
+
+    qbs = stats[(stats["position_group"] == "QB") & (stats["attempts"] >= QUALIFY_MIN["pass_yds"])]
+    qbs = qbs[["game_id", "date", "team", "opponent_team", "home", "player_id", "attempts"]]
+    qbs = qbs.rename(columns={"player_id": "qb_player_id", "attempts": "qb_attempts"})
+
+    rushers = stats[stats["position_group"].isin(RELEVANT_POSITIONS["rush_yds"]) & (stats["carries"] > 0)]
+    rushers = rushers.sort_values("carries", ascending=False).drop_duplicates(["game_id", "team"], keep="first")
+    rushers = rushers[["game_id", "team", "player_id", "carries"]]
+    rushers = rushers.rename(columns={"player_id": "rusher_player_id", "carries": "rusher_carries"})
+
+    pairs = qbs.merge(rushers, on=["game_id", "team"], how="inner")
+    pairs = pairs[pairs["qb_player_id"] != pairs["rusher_player_id"]]
+    return pairs.reset_index(drop=True)
