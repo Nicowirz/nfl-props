@@ -6,7 +6,7 @@ import sys
 
 import pandas as pd
 
-from . import backtest, data, game_backtest, game_model, kalshi, model, pace, tracking
+from . import backtest, data, fantasy, game_backtest, game_model, kalshi, model, pace, rate_backtest, rate_model, tracking
 from .game_markets import moneyline_prob
 from .markets import fair_odds, mean_yards, median_yards, parse_odds, prob_over, to_american
 from .parlay import (GameLeg, Leg, build_game_parlays, build_parlays, evaluate_game_legs,
@@ -435,6 +435,105 @@ def cmd_grade(args):
           f"flat-1-unit-stake ROI {s['roi']:+.1%}")
 
 
+FANTASY_RATE_STATS = ("receptions", "pass_td", "rush_td", "rec_td")
+FANTASY_ELIGIBLE_POSITIONS = {"QB", "RB", "WR", "TE"}
+
+
+def _fit_all_fantasy_ratings(stats, args):
+    yardage_ratings = {}
+    for stat in STATS:
+        fit_stats = (model.add_trailing_share(stats, stat, halflife_days=args.halflife)
+                    if stat in model.SHARE_STATS else stats)
+        yardage_ratings[stat] = model.fit(fit_stats, stat, halflife_days=args.halflife, reg=args.reg)
+    rate_ratings = {}
+    for stat in FANTASY_RATE_STATS:
+        fit_stats = (model.add_trailing_share(stats, stat, halflife_days=args.halflife)
+                    if stat in rate_model.SHARE_STATS else stats)
+        rate_ratings[stat] = rate_model.fit_poisson(fit_stats, stat, halflife_days=args.halflife, reg=args.reg)
+    return yardage_ratings, rate_ratings
+
+
+def _project_player(player_row, opp, home, stats, yardage_ratings, rate_ratings, args):
+    yardage_dists = {}
+    for stat in STATS:
+        if player_row["position"] not in POSITION_GROUPS[stat]:
+            continue
+        r = yardage_ratings[stat]
+        ts = (model.current_trailing_share(stats, stat, player_row["player_id"], halflife_days=args.halflife)
+             if stat in model.SHARE_STATS else None)
+        mu, sigma = model.predicted_distribution(r, player_row["player_id"], player_row["position"], opp, home,
+                                                  trailing_share=ts)
+        yardage_dists[stat] = (mu, sigma)
+    rate_dists = {}
+    for stat in FANTASY_RATE_STATS:
+        if player_row["position"] not in rate_model.RELEVANT_POSITIONS[stat]:
+            continue
+        r = rate_ratings[stat]
+        ts = (model.current_trailing_share(stats, stat, player_row["player_id"], halflife_days=args.halflife)
+             if stat in rate_model.SHARE_STATS else None)
+        lam, disp = rate_model.predicted_rate(r, player_row["player_id"], player_row["position"], opp, home,
+                                              trailing_share=ts)
+        rate_dists[stat] = (lam, disp)
+    return fantasy.simulate_player(player_row["player_id"], yardage_dists, rate_dists)
+
+
+def cmd_fantasy_predict(args):
+    stats = _load(args)
+    games = _upcoming_games(args)
+    roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
+    yardage_ratings, rate_ratings = _fit_all_fantasy_ratings(stats, args)
+    eligible = roster[roster["position"].isin(FANTASY_ELIGIBLE_POSITIONS) & (roster["status"] == "ACT")]
+
+    projections = []
+    for _, g in games.iterrows():
+        for team, opp, home in ((g["home_team"], g["away_team"], True),
+                                (g["away_team"], g["home_team"], False)):
+            for _, p in eligible[eligible["team"] == team].iterrows():
+                proj = _project_player(p, opp, home, stats, yardage_ratings, rate_ratings, args)
+                projections.append((p["full_name"], proj))
+
+    if not projections:
+        print("  no eligible players found for this week")
+        return
+
+    table = fantasy.rank_players([proj for _, proj in projections])
+    name_by_id = {proj.player_id: name for name, proj in projections}
+    table["player"] = table["player_id"].map(name_by_id)
+    print(f"\n=== Fantasy PPR projections, week {args.week} (BETA -- see README known limitations) ===")
+    print(table[["player", "mean", "stdev"]].head(args.top).to_string(
+        index=False, float_format=lambda v: f"{v:.1f}"))
+
+    if args.compare:
+        names = [n.strip() for n in args.compare.split(",")]
+        if len(names) != 2:
+            sys.exit("--compare needs exactly two comma-separated player names")
+        by_name = {name.lower(): proj for name, proj in projections}
+        if names[0].lower() not in by_name or names[1].lower() not in by_name:
+            sys.exit(f"could not find both players on this week's roster: {names}")
+        a, b = by_name[names[0].lower()], by_name[names[1].lower()]
+        p_a = fantasy.prob_a_over_b(a, b)
+        winner, p = (names[0], p_a) if p_a >= 0.5 else (names[1], 1 - p_a)
+        print(f"\nStart {winner} -- {p:.0%} confidence "
+              f"({names[0]}: {a.mean:.1f} +/- {a.stdev:.1f} pts, {names[1]}: {b.mean:.1f} +/- {b.stdev:.1f} pts)")
+        print("Simulated independently (no game-script correlation modeled).")
+
+
+def cmd_fantasy_backtest(args):
+    stats = data.load_player_stats(args.seasons, refresh=args.refresh)
+    for stat in FANTASY_RATE_STATS:
+        if args.start:
+            start = pd.Timestamp(args.start).date()
+        else:
+            start = (stats["date"].max() - pd.Timedelta(days=365 * args.test_seasons)).date()
+        preds = rate_backtest.walk_forward(stats, stat, start, halflife_days=args.halflife, reg=args.reg)
+        s = rate_backtest.summarize(preds)
+        print(f"\n=== {stat}: {s['n']} predictions from {start} ===")
+        print(f"NLL model {s['nll_model']:.4f} vs baseline (season-to-date average) "
+              f"{s['nll_baseline']:.4f} (lower is better)")
+        print("Calibration (PIT should be ~10% per bucket if well-calibrated):")
+        print(rate_backtest.calibration(preds).to_string(float_format=lambda v: f"{v:.3f}"))
+
+
 def main(argv=None):
     # Shared as a parent parser (not just added to `p`) so these options are accepted
     # both before AND after the subcommand, e.g. both `--week 2 predict` and
@@ -523,6 +622,18 @@ def main(argv=None):
     gd = sub.add_parser("grade", parents=[common],
                         help="grade logged best-bet picks against real results and show the running record")
     gd.set_defaults(fn=cmd_grade)
+
+    fp = sub.add_parser("fantasy-predict", parents=[common],
+                        help="PPR fantasy-point projections for --week (BETA)")
+    fp.add_argument("--top", type=int, default=20)
+    fp.add_argument("--compare", help='two comma-separated player names, e.g. "Puka Nacua,Amon-Ra St. Brown"')
+    fp.set_defaults(fn=cmd_fantasy_predict)
+
+    fb = sub.add_parser("fantasy-backtest", parents=[common],
+                        help="walk-forward evaluation for the reception/TD rate models")
+    fb.add_argument("--start", help="YYYY-MM-DD; default = start of the last --test-seasons seasons")
+    fb.add_argument("--test-seasons", type=int, default=1)
+    fb.set_defaults(fn=cmd_fantasy_backtest)
 
     args = p.parse_args(argv)
     args.fn(args)
