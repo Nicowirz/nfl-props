@@ -20,8 +20,9 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 STATS_KEEP = [
     "player_id", "player_display_name", "position", "position_group", "team",
     "opponent_team", "season", "week", "season_type", "game_id",
-    "completions", "attempts", "passing_yards",
-    "carries", "rushing_yards", "receptions", "targets", "receiving_yards",
+    "completions", "attempts", "passing_yards", "passing_tds",
+    "carries", "rushing_yards", "rushing_tds",
+    "receptions", "targets", "receiving_yards", "receiving_tds",
 ]
 
 
@@ -85,8 +86,10 @@ def load_player_stats(seasons: int = 3, refresh: bool = False, today: date | Non
         # No seasons had data available; return empty DataFrame with correct schema.
         return pd.DataFrame(columns=["player_id", "player_name", "position", "position_group", "team",
                                      "opponent_team", "season", "week", "season_type", "game_id",
-                                     "attempts", "passing_yards", "carries", "rushing_yards", "targets",
-                                     "receptions", "receiving_yards", "date", "home"])
+                                     "attempts", "passing_yards", "passing_tds",
+                                     "carries", "rushing_yards", "rushing_tds",
+                                     "targets", "receptions", "receiving_yards", "receiving_tds",
+                                     "date", "home"])
 
     df = pd.concat(frames, ignore_index=True)
     df = df.rename(columns={"player_display_name": "player_name"})
@@ -94,7 +97,8 @@ def load_player_stats(seasons: int = 3, refresh: bool = False, today: date | Non
     df = df.dropna(subset=["gameday"]).copy()
     df["date"] = df["gameday"]
     df["home"] = df["team"] == df["home_team"]
-    for col in ("attempts", "carries", "targets", "passing_yards", "rushing_yards", "receiving_yards"):
+    for col in ("attempts", "carries", "targets", "passing_yards", "rushing_yards", "receiving_yards",
+                "passing_tds", "rushing_tds", "receiving_tds"):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     return df.sort_values("date").reset_index(drop=True)
 
