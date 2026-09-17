@@ -32,6 +32,8 @@ All commands: `.venv\Scripts\python -m nfl_props <command>`.
 | `predict --week N` | projected yardage distribution for that week's matchups |
 | `parlay [--odds file.csv]` | rank legs by edge against live Kalshi prices (no file needed to start), build ranked parlays; `--odds` overrides/supplements the feed, `--no-feed-odds` disables it |
 | `backtest [--pace-adjust]` | walk-forward evaluation: log-likelihood and calibration vs. a naive baseline; `--pace-adjust` applies a calibrated adjustment to player predictions based on the game's predicted scoring total, for comparison against the unadjusted model -- see "What the backtest says" below, as calibrated it does not improve NLL and is not applied anywhere else |
+| `fantasy-predict --week N` | PPR fantasy-point projections for that week (BETA); `--compare "A,B"` prints a start/sit confidence percentage between two players -- see "Fantasy points (PPR)" below |
+| `fantasy-backtest` | walk-forward evaluation for the four reception/touchdown rate models (receptions, pass_td, rush_td, rec_td); refits an IRLS Poisson model for each stat, week by week, so it can take several minutes -- run it in the foreground |
 
 ### Typical week
 
@@ -198,14 +200,19 @@ above: refit weekly, the model never sees the game it predicts. Run with
 
 | stat | model NLL | season-to-date-average baseline NLL |
 |---|---|---|
-| receptions | 1.4715 (6375 predictions, from 2025-09-14) | 1.9837 |
-| pass_td | 1.4241 (693 predictions, from 2025-09-14) | 2.2294 |
-| rush_td | 0.2216 (6375 predictions, from 2025-09-14) | 0.4161 |
-| rec_td | 0.3791 (6375 predictions, from 2025-09-14) | 0.7755 |
+| receptions | 1.4715 (6375 predictions, from 2025-09-14) | 1.5703 |
+| pass_td | 1.4241 (693 predictions, from 2025-09-14) | 1.4479 |
+| rush_td | 0.2216 (6375 predictions, from 2025-09-14) | 0.2344 |
+| rec_td | 0.3791 (6375 predictions, from 2025-09-14) | 0.4002 |
 
-The model beats the naive baseline on all four stats: about 26% lower NLL on receptions,
-36% lower on pass_td, 47% lower on rush_td, and 51% lower on rec_td. No NaNs or fit
-failures in this run.
+The model beats the naive baseline on all four stats: about 6% lower NLL on receptions,
+2% lower on pass_td, 5% lower on rush_td, and 5% lower on rec_td. No NaNs or fit failures
+in this run. (An earlier version of this baseline was degenerate for the rare-count
+touchdown stats -- it fell back to `max(model_lambda, 1e-6)` whenever a player had no
+prior touchdowns yet this season, which is most players most weeks, and that near-zero
+floor made the baseline look far worse than a real naive predictor would. The baseline
+here now shrinks toward the fitted position-group rate instead, and is independent of the
+model's own per-player prediction; these are the honest, corrected margins.)
 
 Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrated):
 
@@ -273,6 +280,12 @@ one-season sample, but pass_td (and to a lesser extent receptions) are worth re-
 once more seasons of walk-forward data are available -- the same caveat the yardage
 model's pass_yds calibration carries above.
 
+Note also that the rush_td/rec_td PIT tables have lower statistical power than
+receptions's: those two outcomes are mostly (~95%) zeros, so their randomized-PIT draw is
+dominated by the same low-information `F(y-1), F(y)` interval for nearly every row. Their
+"close to uniform" read above is real but weaker evidence of good calibration than a stat
+like receptions with a lot more nonzero outcomes to distinguish buckets by.
+
 All four stats beat their baseline here -- there is no stat in this run that failed the
 validation gate the way `--pace-adjust` did for the yardage model above. If a future
 recalibration ever shows `nll_model >= nll_baseline` for any of these four stats, that
@@ -286,7 +299,11 @@ as validated until it does.
   matches the negative binomial's variance to the estimated overdispersion by solving for
   `r` and `p` from `(lambda, dispersion)` directly -- it does not fit `r` by maximum
   likelihood the way a proper NB regression would. This gets the right mean and variance
-  but not necessarily the right shape in the tails.
+  but not necessarily the right shape in the tails. The dispersion estimate itself also
+  has no degrees-of-freedom correction (it divides by the raw residual count, not by
+  residuals minus fitted parameters), which understates true dispersion somewhat and
+  therefore biases the Monte Carlo simulation toward being slightly overconfident --
+  narrower than truly warranted.
 - **Stat components are simulated independently.** `fantasy.py`'s Monte Carlo simulator
   draws yardage, receptions, and touchdowns from their own separate fitted distributions
   for a given player-game, with no modeled correlation between them (e.g. a big-yardage
@@ -304,6 +321,17 @@ as validated until it does.
   on top of the three yardage stats, so a fantasy projection can compound the same missed
   signal (e.g. a backup's usual workload) across as many as seven independently-fit
   numbers instead of one.
+- **Only the four component rate models are walk-forward validated here -- the combined
+  fantasy-points distribution is not.** The backtest above validates receptions, pass_td,
+  rush_td, and rec_td individually. It says nothing directly about the COMBINED PPR
+  fantasy-points distribution that `fantasy-predict` actually outputs, or about the
+  `--compare` start/sit P(A outscores B) confidence percentage specifically -- neither has
+  its own independent walk-forward validation. The independence-between-stat-components
+  simulation assumption documented above likely biases that confidence percentage toward
+  being more extreme (more "confident") than truly warranted: independent components
+  understate the joint distribution's true variance relative to how correlated real
+  outcomes actually are, and a narrower simulated distribution pushes P(A > B) away from
+  50% more readily than the true, wider distribution would.
 
 ## Known limitations
 
@@ -354,8 +382,8 @@ nfl_props/parlay.py     leg evaluation (edge, EV, Kelly), parlay enumeration
 nfl_props/backtest.py   walk-forward evaluation, calibration
 nfl_props/pace.py       game-pace adjustment for player-prop predictions -- currently unused
                         by default; only reachable via `backtest --pace-adjust` (see below)
-nfl_props/rate_model.py    Poisson ridge fit (IRLS) for receptions and touchdown counts
-nfl_props/fantasy.py       Monte Carlo PPR fantasy-points simulator, start/sit comparison
+nfl_props/rate_model.py Poisson ridge fit (IRLS) for receptions and touchdown counts
+nfl_props/fantasy.py    Monte Carlo PPR fantasy-points simulator, start/sit comparison
 nfl_props/rate_backtest.py walk-forward evaluation for the rate models (NLL, calibration)
 nfl_props/cli.py        commands
 tests/                  pytest

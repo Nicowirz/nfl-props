@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from . import rate_model
 from .model import OFFSET
 
 PPR_SCORING = {
@@ -76,8 +77,7 @@ def _sample_quasi_poisson(rng: np.random.Generator, lam: float, dispersion: floa
     """
     if dispersion <= 1.0 + 1e-9:
         return rng.poisson(lam, n_samples).astype(float)
-    r = lam / (dispersion - 1.0)
-    p = r / (r + lam)
+    r, p = rate_model.nb_params(lam, dispersion)
     return rng.negative_binomial(r, p, n_samples).astype(float)
 
 

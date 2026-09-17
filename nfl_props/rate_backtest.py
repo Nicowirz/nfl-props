@@ -42,7 +42,9 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
                                                   g["opponent_team"], bool(g["home"]),
                                                   trailing_share=g.get("trailing_share"))
             prior = season_totals.get(g["player_id"], [])
-            base_lam = float(np.mean(prior)) if prior else max(lam, EPS)
+            group_rate = float(np.exp(ratings.position_intercept.get(g["position_group"],
+                                                                      ratings.intercept_fallback)))
+            base_lam = (sum(prior) + group_rate) / (len(prior) + 1)
             rows.append({
                 "date": g["date"], "player_id": g["player_id"], "position_group": g["position_group"],
                 "actual": y, "model_lambda": lam, "model_dispersion": disp, "base_lambda": base_lam,
@@ -59,8 +61,7 @@ def _nll(y: np.ndarray, lam: np.ndarray, dispersion: np.ndarray) -> float:
         nll[poisson_mask] = -poisson.logpmf(y[poisson_mask], lam[poisson_mask])
     nb_mask = ~poisson_mask
     if nb_mask.any():
-        r = lam[nb_mask] / (dispersion[nb_mask] - 1.0)
-        p = r / (r + lam[nb_mask])
+        r, p = rate_model.nb_params(lam[nb_mask], dispersion[nb_mask])
         nll[nb_mask] = -nbinom.logpmf(y[nb_mask], r, p)
     return float(np.mean(nll))
 
@@ -92,8 +93,7 @@ def calibration(df: pd.DataFrame, bins: int = 10, seed: int = 0) -> pd.DataFrame
         f_hi[poisson_mask] = poisson.cdf(y[poisson_mask], lam[poisson_mask])
     nb_mask = ~poisson_mask
     if nb_mask.any():
-        r = lam[nb_mask] / (dispersion[nb_mask] - 1.0)
-        p = r / (r + lam[nb_mask])
+        r, p = rate_model.nb_params(lam[nb_mask], dispersion[nb_mask])
         f_lo[nb_mask] = nbinom.cdf(y[nb_mask] - 1, r, p)
         f_hi[nb_mask] = nbinom.cdf(y[nb_mask], r, p)
     u = rng.uniform(size=len(y))

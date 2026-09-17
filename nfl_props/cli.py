@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import numpy as np
 import pandas as pd
 
 from . import backtest, data, fantasy, game_backtest, game_model, kalshi, model, pace, rate_backtest, rate_model, tracking
@@ -456,13 +457,18 @@ def _fit_all_fantasy_ratings(stats, args):
 def _project_player(player_row, opp, home, stats, yardage_ratings, rate_ratings, args):
     yardage_dists = {}
     for stat in STATS:
-        if player_row["position"] not in POSITION_GROUPS[stat]:
+        if player_row["position"] not in model.RELEVANT_POSITIONS[stat]:
             continue
         r = yardage_ratings[stat]
         ts = (model.current_trailing_share(stats, stat, player_row["player_id"], halflife_days=args.halflife)
              if stat in model.SHARE_STATS else None)
         mu, sigma = model.predicted_distribution(r, player_row["player_id"], player_row["position"], opp, home,
                                                   trailing_share=ts)
+        if pd.isna(mu) or pd.isna(sigma):
+            # Same NaN guard as cmd_predict: model.fit() can produce NaN ratings for a
+            # stat if a raw stat value breaks the log(yards + OFFSET) assumption. Skip
+            # rather than silently feed an all-NaN distribution into the simulator.
+            continue
         yardage_dists[stat] = (mu, sigma)
     rate_dists = {}
     for stat in FANTASY_RATE_STATS:
@@ -473,14 +479,21 @@ def _project_player(player_row, opp, home, stats, yardage_ratings, rate_ratings,
              if stat in rate_model.SHARE_STATS else None)
         lam, disp = rate_model.predicted_rate(r, player_row["player_id"], player_row["position"], opp, home,
                                               trailing_share=ts)
+        if pd.isna(lam) or pd.isna(disp):
+            # Defensive consistency with the yardage loop above; predicted_rate's
+            # np.clip makes a NaN here less likely in practice.
+            continue
         rate_dists[stat] = (lam, disp)
-    return fantasy.simulate_player(player_row["player_id"], yardage_dists, rate_dists)
+    seed = hash(player_row["player_id"]) % (2**32)
+    return fantasy.simulate_player(player_row["player_id"], yardage_dists, rate_dists, seed=seed)
 
 
 def cmd_fantasy_predict(args):
+    print(f"\n=== Fantasy PPR projections, week {args.week} (BETA -- see README known limitations) ===")
     stats = _load(args)
     games = _upcoming_games(args)
     roster = data.load_rosters(args.season, args.week, refresh=args.refresh)
+    roster_names = {p["player_id"]: p["full_name"] for _, p in roster.iterrows()}
     yardage_ratings, rate_ratings = _fit_all_fantasy_ratings(stats, args)
     eligible = roster[roster["position"].isin(FANTASY_ELIGIBLE_POSITIONS) & (roster["status"] == "ACT")]
 
@@ -496,12 +509,28 @@ def cmd_fantasy_predict(args):
         print("  no eligible players found for this week")
         return
 
+    # Belt-and-suspenders: _project_player already skips NaN component distributions,
+    # but drop any projection whose combined mean still came back NaN before ranking.
+    projections = [(name, proj) for name, proj in projections if not np.isnan(proj.mean)]
+    if not projections:
+        print("  no eligible players found for this week")
+        return
+
     table = fantasy.rank_players([proj for _, proj in projections])
     name_by_id = {proj.player_id: name for name, proj in projections}
     table["player"] = table["player_id"].map(name_by_id)
-    print(f"\n=== Fantasy PPR projections, week {args.week} (BETA -- see README known limitations) ===")
     print(table[["player", "mean", "stdev"]].head(args.top).to_string(
         index=False, float_format=lambda v: f"{v:.1f}"))
+
+    prior_ids = set()
+    for r in list(yardage_ratings.values()) + list(rate_ratings.values()):
+        prior_ids.update(r.prior_players)
+    if prior_ids:
+        names = [roster_names.get(p, p) for p in prior_ids]
+        shown = ", ".join(names[:10])
+        if len(names) > 10:
+            shown += f" (+{len(names) - 10} more)"
+        print(f"  no history: {shown}")
 
     if args.compare:
         names = [n.strip() for n in args.compare.split(",")]
@@ -630,7 +659,9 @@ def main(argv=None):
     fp.set_defaults(fn=cmd_fantasy_predict)
 
     fb = sub.add_parser("fantasy-backtest", parents=[common],
-                        help="walk-forward evaluation for the reception/TD rate models")
+                        help="walk-forward evaluation for the reception/TD rate models "
+                             "(refits an IRLS Poisson model for 4 stats, week by week -- "
+                             "can take several minutes; run it in the foreground, don't background it)")
     fb.add_argument("--start", help="YYYY-MM-DD; default = start of the last --test-seasons seasons")
     fb.add_argument("--test-seasons", type=int, default=1)
     fb.set_defaults(fn=cmd_fantasy_backtest)

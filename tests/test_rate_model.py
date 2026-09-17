@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import pytest
 
 from nfl_props import model, rate_model
 

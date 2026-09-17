@@ -36,7 +36,6 @@ SHARE_STATS = {"receptions"}
 
 MAX_IRLS_ITER = 25
 IRLS_TOL = 1e-6
-MIN_GROUP_RESIDUALS = 30
 
 
 @dataclass
@@ -158,7 +157,7 @@ def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halfl
     dispersion: dict[str, float] = {}
     for g in np.unique(group):
         mask = group == g
-        if mask.sum() >= MIN_GROUP_RESIDUALS:
+        if mask.sum() >= model.MIN_GROUP_RESIDUALS:
             dispersion[g] = max(1.0, float(np.average(pearson_sq[mask], weights=w[mask])))
 
     player_name = df.drop_duplicates("player_id").set_index("player_id")["player_name"].to_dict()
@@ -173,6 +172,18 @@ def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halfl
         home_field=home_field, dispersion=dispersion, dispersion_global=dispersion_global,
         as_of=as_of, n_games=n, game_counts=game_counts,
     )
+
+
+def nb_params(lam: float | np.ndarray, dispersion: float | np.ndarray) -> tuple:
+    """Reparameterize a (mean, quasi-Poisson dispersion) pair as a negative binomial's
+    (r, p), matching the mean/variance of Var = dispersion * lam (NB2 parameterization).
+    Only meaningful for dispersion > 1.0 -- callers gate on that themselves (see
+    fantasy.py's _sample_quasi_poisson and rate_backtest.py's _nll/calibration for the
+    dispersion <= 1.0 Poisson-branch check that stays at each call site).
+    """
+    r = lam / (dispersion - 1.0)
+    p = r / (r + lam)
+    return r, p
 
 
 def predicted_rate(r: RateRatings, player_id: str, position_group: str, opponent_team: str,
