@@ -68,3 +68,19 @@ def test_joint_prob_single_condition_matches_marginal_frequency():
     samples = np.array([[15.0], [5.0], [20.0], [1.0]])
     p = joint_sim.joint_prob(samples, [(0, "over", 10.0)])
     assert p == pytest.approx(2 / 4)
+
+
+def test_calibrate_joint_sensitivity_delegates_to_pace(monkeypatch):
+    from nfl_props import pace
+
+    captured = {}
+
+    def fake_calibrate_sensitivity(stats, games, stat, start, **kwargs):
+        captured["args"] = (stats, games, stat, start, kwargs)
+        return 0.123
+
+    monkeypatch.setattr(pace, "calibrate_sensitivity", fake_calibrate_sensitivity)
+    result = joint_sim.calibrate_joint_sensitivity("STATS", "GAMES", "rush_yds", "2024-10-01",
+                                                    halflife_days=90.0)
+    assert result == 0.123
+    assert captured["args"] == ("STATS", "GAMES", "rush_yds", "2024-10-01", {"halflife_days": 90.0})

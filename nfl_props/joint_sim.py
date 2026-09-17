@@ -60,3 +60,16 @@ def joint_prob(samples: np.ndarray, conditions: list[tuple[int, str, float]]) ->
     for idx, selection, line in conditions:
         mask &= (samples[:, idx] > line) if selection == "over" else (samples[:, idx] < line)
     return float(mask.mean())
+
+
+def calibrate_joint_sensitivity(stats, games, stat: str, start, **kwargs) -> float:
+    """Delegates to pace.calibrate_sensitivity() -- the same underlying regression
+    (residual vs. this game's own predicted total deviation, walk-forward, leakage-safe)
+    answers the question this module needs too. Kept as a separate entry point (not
+    literally pace.SENSITIVITY) so this module's calibration is run, recorded, and
+    validated independently -- see this module's JOINT_SENSITIVITY comment for why the
+    SAME regression can be validated differently for a different use (a shared joint
+    shock vs. a permanent marginal shift).
+    """
+    from . import pace
+    return pace.calibrate_sensitivity(stats, games, stat, start, **kwargs)
