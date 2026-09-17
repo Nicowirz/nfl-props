@@ -446,6 +446,23 @@ def test_fit_recovers_wider_sigma_for_low_sample_players():
     assert abs(r.sigma_low_sample["QB"] - true_low_sigma) < 0.3
 
 
+def test_fit_sigma_excludes_low_sample_rows_from_normal_pool():
+    # Regression test for the sigma-pool-contamination bug: sigma["QB"] (the "normal"
+    # pool) must be computed ONLY from normal-sample players' residuals -- not from the
+    # SAME rows sigma_low_sample separately draws from. _synthetic_wide_sigma()'s
+    # defaults (0.30 vs 0.70, 40-of-320 low rows) don't move sigma["QB"] far enough to
+    # unambiguously distinguish contaminated vs. clean under test 1's existing 0.1
+    # tolerance, so this uses a much larger sigma disparity: if contamination were
+    # present, mixing in the 40 low-sample rows (true sigma 1.20) would pull the
+    # mixture estimate to roughly sqrt((280*0.20**2 + 40*1.20**2) / 320) =~ 0.46, far
+    # outside a tight bound around the true normal-only value (0.20).
+    df, true_normal_sigma, true_low_sigma = _synthetic_wide_sigma(
+        n_normal_players=20, n_low_players=20, normal_sigma=0.20, low_sigma=1.20,
+        games_per_normal=14)
+    r = model.fit(df, "pass_yds", reg=0.05, halflife_days=100_000, min_games=50)
+    assert abs(r.sigma["QB"] - true_normal_sigma) < 0.08
+
+
 def test_fit_sigma_low_sample_empty_for_stat_outside_wide_sigma_stats():
     # rush_yds is NOT in WIDE_SIGMA_STATS -- sigma_low_sample must be empty regardless
     # of how the data looks. (Despite its former name, this test does not exercise any

@@ -308,17 +308,26 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
     resid = y - X @ b
     sigma_global = float(np.sqrt(np.average(resid ** 2, weights=w)))
     group = df["position_group"].to_numpy()
+    game_counts = df["player_id"].value_counts().to_dict()
+
+    # is_low_sample is computed BEFORE sigma so the "normal" pool can exclude those rows
+    # -- a clean partition against sigma_low_sample's own pool below, instead of the two
+    # pools overlapping (sigma[g] used to be computed from EVERY row of the group,
+    # low-sample rows included, contaminating the normal-player estimate with the very
+    # rows sigma_low_sample exists to separate out). For a stat outside WIDE_SIGMA_STATS,
+    # is_low_sample is never computed and this mask is always all-False, so sigma[g] stays
+    # exactly `group == g` -- byte-identical output for every other stat.
+    is_low_sample = (df["player_id"].map(game_counts).to_numpy() < NEW_PLAYER_GAMES
+                     if stat in WIDE_SIGMA_STATS else np.zeros(n, dtype=bool))
+
     sigma: dict[str, float] = {}
     for g in np.unique(group):
-        mask = group == g
+        mask = (group == g) & ~is_low_sample
         if mask.sum() >= MIN_GROUP_RESIDUALS:
             sigma[g] = float(np.sqrt(np.average(resid[mask] ** 2, weights=w[mask])))
 
-    game_counts = df["player_id"].value_counts().to_dict()
-
     sigma_low_sample: dict[str, float] = {}
     if stat in WIDE_SIGMA_STATS:
-        is_low_sample = df["player_id"].map(game_counts).to_numpy() < NEW_PLAYER_GAMES
         for g in np.unique(group):
             mask = (group == g) & is_low_sample
             if mask.sum() >= MIN_GROUP_RESIDUALS:
