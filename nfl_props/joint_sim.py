@@ -12,6 +12,7 @@ See docs/superpowers/specs/2026-09-17-nfl-props-joint-correlation-sim-design.md.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from .model import OFFSET
 
@@ -102,3 +103,67 @@ def qb_leading_rusher_pairs(stats) -> "pd.DataFrame":
     pairs = qbs.merge(rushers, on=["game_id", "team"], how="inner")
     pairs = pairs[pairs["qb_player_id"] != pairs["rusher_player_id"]]
     return pairs.reset_index(drop=True)
+
+
+def check_correlation_direction(stats, games, start, sensitivity=None, n: int = 1000,
+                                halflife_days: float = 180.0, reg: float = 5.0,
+                                pass_min_games: int = 50, rush_min_games: int = 200,
+                                game_halflife_days: float = 365.0, game_reg=None,
+                                game_min_games=None) -> dict:
+    """Gate 1: for real historical QB+leading-rusher pairs (walk-forward, no leakage),
+    compare the SIMULATED correlation this module's mechanism produces against the REAL
+    empirical correlation between their actual residuals. Returns {"n_pairs": int,
+    "real_corr": float, "simulated_corr": float} (both correlations NaN if fewer than 2
+    pairs are found) so the caller can judge direction/magnitude agreement before Gate 2.
+    """
+    from . import backtest, game_backtest, game_model as gm
+
+    game_reg = gm.TOTAL_REG if game_reg is None else game_reg
+    game_min_games = gm.MIN_TOTAL_GAMES if game_min_games is None else game_min_games
+
+    pass_preds = backtest.walk_forward(stats, "pass_yds", start, halflife_days=halflife_days,
+                                       reg=reg, min_games=pass_min_games)
+    rush_preds = backtest.walk_forward(stats, "rush_yds", start, halflife_days=halflife_days,
+                                       reg=reg, min_games=rush_min_games)
+    game_preds = game_backtest.walk_forward_total(games, start, halflife_days=game_halflife_days,
+                                                  reg=game_reg, min_games=game_min_games)
+
+    relevant_stats = stats[stats["date"] >= pd.Timestamp(start)]
+    pairs = qb_leading_rusher_pairs(relevant_stats)
+
+    pass_cols = pass_preds[["player_id", "date", "y", "model_mu", "model_sigma"]].rename(
+        columns={"y": "qb_y", "model_mu": "qb_mu", "model_sigma": "qb_sigma"})
+    rush_cols = rush_preds[["player_id", "date", "y", "model_mu", "model_sigma"]].rename(
+        columns={"y": "rusher_y", "model_mu": "rusher_mu", "model_sigma": "rusher_sigma"})
+
+    joined = pairs.merge(pass_cols, left_on=["qb_player_id", "date"], right_on=["player_id", "date"])
+    joined = joined.merge(rush_cols, left_on=["rusher_player_id", "date"], right_on=["player_id", "date"],
+                          suffixes=("", "_r"))
+
+    joined["home_team"] = np.where(joined["home"], joined["team"], joined["opponent_team"])
+    joined["away_team"] = np.where(joined["home"], joined["opponent_team"], joined["team"])
+    game_cols = game_preds.rename(columns={"model_mu": "total_mu", "model_sigma": "total_sigma"})[
+        ["gameday", "home_team", "away_team", "total_mu", "total_sigma", "league_avg_total"]]
+    joined = joined.merge(game_cols, left_on=["date", "home_team", "away_team"],
+                          right_on=["gameday", "home_team", "away_team"])
+
+    if len(joined) < 2:
+        return {"n_pairs": len(joined), "real_corr": float("nan"), "simulated_corr": float("nan")}
+
+    qb_residual = (joined["qb_y"] - joined["qb_mu"]).to_numpy()
+    rusher_residual = (joined["rusher_y"] - joined["rusher_mu"]).to_numpy()
+    real_corr = float(np.corrcoef(qb_residual, rusher_residual)[0, 1])
+
+    sim_qb_dev, sim_rusher_dev = [], []
+    for _, row in joined.iterrows():
+        players = [(row["qb_mu"], row["qb_sigma"], "pass_yds"),
+                  (row["rusher_mu"], row["rusher_sigma"], "rush_yds")]
+        samples = simulate_player_yards(row["total_mu"], row["total_sigma"], row["league_avg_total"],
+                                        players, sensitivity=sensitivity, n=n)
+        log_qb = np.log(np.maximum(samples[:, 0], 1.0 - OFFSET) + OFFSET)
+        log_rusher = np.log(np.maximum(samples[:, 1], 1.0 - OFFSET) + OFFSET)
+        sim_qb_dev.append(float(np.mean(log_qb)) - row["qb_mu"])
+        sim_rusher_dev.append(float(np.mean(log_rusher)) - row["rusher_mu"])
+    simulated_corr = float(np.corrcoef(sim_qb_dev, sim_rusher_dev)[0, 1])
+
+    return {"n_pairs": len(joined), "real_corr": real_corr, "simulated_corr": simulated_corr}

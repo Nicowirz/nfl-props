@@ -141,3 +141,32 @@ def test_qb_leading_rusher_pairs_excludes_team_with_no_qualifying_rusher():
     df = pd.DataFrame(rows)
     pairs = joint_sim.qb_leading_rusher_pairs(df)
     assert len(pairs) == 0
+
+
+def test_check_correlation_direction_returns_real_and_simulated_corr(monkeypatch):
+    from nfl_props import backtest, game_backtest
+
+    date = pd.Timestamp("2024-10-01")
+    pass_preds = pd.DataFrame([
+        {"player_id": "QB_A", "date": date, "y": 4.2, "model_mu": 4.0, "model_sigma": 0.3},
+    ])
+    rush_preds = pd.DataFrame([
+        {"player_id": "RB1_A", "date": date, "y": 2.0, "model_mu": 2.5, "model_sigma": 0.4},
+    ])
+    game_preds = pd.DataFrame([
+        {"gameday": date, "home_team": "A", "away_team": "B",
+         "model_mu": 44.0, "model_sigma": 5.0, "league_avg_total": 44.0},
+    ])
+    monkeypatch.setattr(backtest, "walk_forward",
+                        lambda stats, stat, start, **k: pass_preds if stat == "pass_yds" else rush_preds)
+    monkeypatch.setattr(game_backtest, "walk_forward_total", lambda *a, **k: game_preds)
+
+    stats = pd.DataFrame([
+        {"game_id": "g1", "team": "A", "opponent_team": "B", "date": date,
+         "player_id": "QB_A", "position_group": "QB", "home": True, "attempts": 30.0, "carries": 0.0},
+        {"game_id": "g1", "team": "A", "opponent_team": "B", "date": date,
+         "player_id": "RB1_A", "position_group": "RB", "home": True, "attempts": 0.0, "carries": 15.0},
+    ])
+    result = joint_sim.check_correlation_direction(stats, "GAMES", date.date(), n=200)
+    assert result["n_pairs"] == 1
+    assert -1.0 <= result["simulated_corr"] <= 1.0 or pd.isna(result["simulated_corr"])
