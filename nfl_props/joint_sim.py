@@ -53,6 +53,14 @@ N_DRAWS = 10_000
 # real calibrated-against-total values (this module's own calibration, kept independent
 # of pace.py's SENSITIVITY per calibrate_joint_sensitivity()'s docstring), not tuned or
 # cherry-picked to pass the gate.
+#
+# Post-review fix (still 2026-09-17): check_correlation_direction()'s default n was raised
+# from 1000 to N_DRAWS (10_000) because n=1000's per-pair mean is noisy enough that
+# simulated_corr's SIGN is not reproducible run to run (one of four reruns at n=1000
+# above even landed on the wrong-conclusion sign) -- n=10_000 matches the denoised n=50000
+# diagnostic that produced the stable +0.0279 recorded above. This does not change the
+# historical numbers already recorded in this comment; they stand as the real Gate 1
+# result actually validated (at n=1000 and denoised at n=50000).
 JOINT_SENSITIVITY: dict[str, float] = {"pass_yds": 0.030, "rush_yds": 0.024, "rec_yds": 0.0}
 
 
@@ -136,16 +144,24 @@ def qb_leading_rusher_pairs(stats) -> "pd.DataFrame":
     return pairs.reset_index(drop=True)
 
 
-def check_correlation_direction(stats, games, start, sensitivity=None, n: int = 1000,
+def check_correlation_direction(stats, games, start, sensitivity=None, n: int = N_DRAWS,
                                 halflife_days: float = 180.0, reg: float = 5.0,
                                 pass_min_games: int = 50, rush_min_games: int = 200,
                                 game_halflife_days: float = 365.0, game_reg=None,
-                                game_min_games=None) -> dict:
+                                game_min_games=None, seed: int | None = None) -> dict:
     """Gate 1: for real historical QB+leading-rusher pairs (walk-forward, no leakage),
     compare the SIMULATED correlation this module's mechanism produces against the REAL
     empirical correlation between their actual residuals. Returns {"n_pairs": int,
     "real_corr": float, "simulated_corr": float} (both correlations NaN if fewer than 2
     pairs are found) so the caller can judge direction/magnitude agreement before Gate 2.
+
+    `n` defaults to N_DRAWS (10_000, matching simulate_player_yards' own default) rather
+    than a smaller ad hoc value: each pair's simulated_corr contribution is the MEAN of
+    `n` per-draw log-yards samples, and at only ~1000 draws that per-pair mean is noisy
+    enough that simulated_corr's sign itself is not reproducible run to run (verified
+    directly during this gate's real validation -- see JOINT_SENSITIVITY's comment).
+    `seed`, if given, makes the whole call fully reproducible (each pair gets its own
+    derived sub-seed so pairs are not forced to share identical draw noise).
     """
     from . import backtest, game_backtest, game_model as gm
 
@@ -186,11 +202,12 @@ def check_correlation_direction(stats, games, start, sensitivity=None, n: int = 
     real_corr = float(np.corrcoef(qb_residual, rusher_residual)[0, 1])
 
     sim_qb_dev, sim_rusher_dev = [], []
-    for _, row in joined.iterrows():
+    for i, (_, row) in enumerate(joined.iterrows()):
         players = [(row["qb_mu"], row["qb_sigma"], "pass_yds"),
                   (row["rusher_mu"], row["rusher_sigma"], "rush_yds")]
+        row_seed = None if seed is None else seed + i
         samples = simulate_player_yards(row["total_mu"], row["total_sigma"], row["league_avg_total"],
-                                        players, sensitivity=sensitivity, n=n)
+                                        players, sensitivity=sensitivity, n=n, seed=row_seed)
         log_qb = np.log(np.maximum(samples[:, 0], 1.0 - OFFSET) + OFFSET)
         log_rusher = np.log(np.maximum(samples[:, 1], 1.0 - OFFSET) + OFFSET)
         sim_qb_dev.append(float(np.mean(log_qb)) - row["qb_mu"])

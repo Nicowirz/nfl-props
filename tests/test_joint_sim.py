@@ -170,3 +170,43 @@ def test_check_correlation_direction_returns_real_and_simulated_corr(monkeypatch
     result = joint_sim.check_correlation_direction(stats, "GAMES", date.date(), n=200)
     assert result["n_pairs"] == 1
     assert -1.0 <= result["simulated_corr"] <= 1.0 or pd.isna(result["simulated_corr"])
+
+
+def test_check_correlation_direction_seed_makes_simulated_corr_reproducible(monkeypatch):
+    # Two real QB+leading-rusher pairs (different games) so the per-pair sub-seeding
+    # (seed + i in the implementation) is actually exercised, not just a single draw.
+    from nfl_props import backtest, game_backtest
+
+    date1, date2 = pd.Timestamp("2024-10-01"), pd.Timestamp("2024-10-08")
+    pass_preds = pd.DataFrame([
+        {"player_id": "QB_A", "date": date1, "y": 4.2, "model_mu": 4.0, "model_sigma": 0.3},
+        {"player_id": "QB_A", "date": date2, "y": 4.1, "model_mu": 4.0, "model_sigma": 0.3},
+    ])
+    rush_preds = pd.DataFrame([
+        {"player_id": "RB1_A", "date": date1, "y": 2.0, "model_mu": 2.5, "model_sigma": 0.4},
+        {"player_id": "RB1_A", "date": date2, "y": 2.3, "model_mu": 2.5, "model_sigma": 0.4},
+    ])
+    game_preds = pd.DataFrame([
+        {"gameday": date1, "home_team": "A", "away_team": "B",
+         "model_mu": 44.0, "model_sigma": 5.0, "league_avg_total": 44.0},
+        {"gameday": date2, "home_team": "A", "away_team": "C",
+         "model_mu": 40.0, "model_sigma": 5.0, "league_avg_total": 44.0},
+    ])
+    monkeypatch.setattr(backtest, "walk_forward",
+                        lambda stats, stat, start, **k: pass_preds if stat == "pass_yds" else rush_preds)
+    monkeypatch.setattr(game_backtest, "walk_forward_total", lambda *a, **k: game_preds)
+
+    stats = pd.DataFrame([
+        {"game_id": "g1", "team": "A", "opponent_team": "B", "date": date1,
+         "player_id": "QB_A", "position_group": "QB", "home": True, "attempts": 30.0, "carries": 0.0},
+        {"game_id": "g1", "team": "A", "opponent_team": "B", "date": date1,
+         "player_id": "RB1_A", "position_group": "RB", "home": True, "attempts": 0.0, "carries": 15.0},
+        {"game_id": "g2", "team": "A", "opponent_team": "C", "date": date2,
+         "player_id": "QB_A", "position_group": "QB", "home": True, "attempts": 28.0, "carries": 0.0},
+        {"game_id": "g2", "team": "A", "opponent_team": "C", "date": date2,
+         "player_id": "RB1_A", "position_group": "RB", "home": True, "attempts": 0.0, "carries": 18.0},
+    ])
+    r1 = joint_sim.check_correlation_direction(stats, "GAMES", date1.date(), n=200, seed=0)
+    r2 = joint_sim.check_correlation_direction(stats, "GAMES", date1.date(), n=200, seed=0)
+    assert r1["n_pairs"] == 2
+    assert r1 == r2  # same seed -> bit-identical result, including simulated_corr
