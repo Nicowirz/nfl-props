@@ -37,30 +37,70 @@ N_DRAWS = 10_000
 # -0.0214 -- the sign itself flips run to run because check_correlation_direction never
 # seeds simulate_player_yards, and the true per-pair signal is tiny relative to n=1000's
 # Monte Carlo noise. A diagnostic-only rerun with n=50000 (same data/sensitivities, just
-# less MC noise; not a parameter search for a passing result) converges to a stable
-# simulated_corr=+0.0279 -- OPPOSITE SIGN from real_corr, and both magnitudes are
-# negligibly close to zero (~0.03). GATE 1 FAILED on both prongs of the stated
-# criterion: simulated_corr is not a reproducible non-negligible signal, and even its
-# denoised value has the wrong sign. This is exactly the risk anticipated in Task 4's
-# brief: the shared shock here is built from the game's TOTAL deviation, and pace.py's
-# own calibrated sensitivities are both positive relative to total for pass_yds and
-# rush_yds, so a shared total-based shock structurally pushes a QB's passing and his
-# team's leading rusher's rushing in the SAME direction, while the real-world effect is
-# a game-script/margin effect (weakly negative empirically here). Per the brief: Task 5
-# does NOT proceed on this result. A follow-up using game_model.predicted_margin instead
-# of (or alongside) total deviation is a plausible fix but is a separate design change
-# requiring its own sign-off -- not applied here. pass_yds/rush_yds above are still the
-# real calibrated-against-total values (this module's own calibration, kept independent
-# of pace.py's SENSITIVITY per calibrate_joint_sensitivity()'s docstring), not tuned or
-# cherry-picked to pass the gate.
+# less MC noise; not a parameter search for a passing result) gave simulated_corr=+0.0279
+# -- OPPOSITE SIGN from real_corr, and both magnitudes are negligibly close to zero
+# (~0.03). GATE 1 FAILED on both prongs of the stated criterion: simulated_corr is not a
+# reproducible non-negligible signal, and even its denoised value has the wrong sign.
+# This is exactly the risk anticipated in Task 4's brief: the shared shock here is built
+# from the game's TOTAL deviation, and pace.py's own calibrated sensitivities are both
+# positive relative to total for pass_yds and rush_yds, so a shared total-based shock
+# structurally pushes a QB's passing and his team's leading rusher's rushing in the SAME
+# direction, while the real-world effect is a game-script/margin effect (weakly negative
+# empirically here). Per the brief: Task 5 does NOT proceed on this result. A follow-up
+# using game_model.predicted_margin instead of (or alongside) total deviation is a
+# plausible fix but is a separate design change requiring its own sign-off -- not applied
+# here. pass_yds/rush_yds above are still the real calibrated-against-total values (this
+# module's own calibration, kept independent of pace.py's SENSITIVITY per
+# calibrate_joint_sensitivity()'s docstring), not tuned or cherry-picked to pass the gate.
+#
+# Post-review precision fix (final review, 2026-09-18) -- what simulated_corr above IS
+# and ISN'T: check_correlation_direction()'s simulated_corr does NOT measure the actual
+# within-game correlation this mechanism induces between a QB's and rusher's simulated
+# draws. It is the ACROSS-PAIR correlation of each pair's own simulated MEAN deviation:
+# sim_qb_dev[i] ~= s_pass * E[total_dev_i] and sim_rusher_dev[i] ~= s_rush * E[total_dev_i]
+# are both proportional to the SAME per-pair scalar (pair i's drawn-total mean), so this
+# estimator's population limit as n -> infinity is sign(s_pass * s_rush) -- structurally
+# ~+1 here, since both calibrated sensitivities above are positive. The finite-n values
+# actually observed above (the four n=1000 reruns, and the n=50000 rerun's +0.0279) are
+# therefore noisy samples on the way to that +1 limit, not a converged, "stable"
+# measurement of the mechanism -- raising check_correlation_direction()'s default n from
+# 1000 to N_DRAWS (10_000, see its docstring) only reduces that same sampling noise; it
+# does not and cannot make simulated_corr converge to +0.0279 or to any other value short
+# of +1, and neither the n=10_000 default nor the n=50_000 diagnostic should be described
+# as "matching" or "stable."
+#
+# The quantity the design spec's Gate 1 actually asks about -- "does the simulator's
+# implied correlation between a real historical same-game pair... match the real
+# empirical correlation" -- is the WITHIN-GAME correlation of the two players' simulated
+# draws themselves (np.corrcoef of simulate_player_yards()'s own output columns), not the
+# across-pair-of-means construction above. Measured directly (2026-09-18, one-off script,
+# not saved) with these calibrated sensitivities and representative real-ish parameters --
+# simulate_player_yards(44.0, 5.0, 44.0, [(5.5, 0.3, "pass_yds"), (3.5, 0.4, "rush_yds")],
+# sensitivity={"pass_yds": 0.030, "rush_yds": 0.024}, n=2_000_000, seed=12345), then
+# np.corrcoef(samples[:, 0], samples[:, 1])[0, 1] -- gave approximately -0.0001:
+# essentially zero, several orders of magnitude below real_corr=-0.0274 or any plausible
+# real same-game correlation. This makes GATE 1 FAILED more strongly justified, not less:
+# at these calibrated sensitivities the mechanism doesn't just push the wrong sign, it
+# barely induces any real joint effect between the two players' draws at all.
 #
 # Post-review fix (still 2026-09-17): check_correlation_direction()'s default n was raised
 # from 1000 to N_DRAWS (10_000) because n=1000's per-pair mean is noisy enough that
 # simulated_corr's SIGN is not reproducible run to run (one of four reruns at n=1000
-# above even landed on the wrong-conclusion sign) -- n=10_000 matches the denoised n=50000
-# diagnostic that produced the stable +0.0279 recorded above. This does not change the
-# historical numbers already recorded in this comment; they stand as the real Gate 1
-# result actually validated (at n=1000 and denoised at n=50000).
+# above even landed on the wrong-conclusion sign). This only reduces run-to-run sampling
+# noise in the across-pair-of-means artifact described above; per the precision fix above,
+# it does not converge simulated_corr to any particular value and does not change GATE 1's
+# verdict. This does not change the historical numbers already recorded in this comment;
+# they stand as the real Gate 1 result actually validated (at n=1000 and denoised at
+# n=50000).
+#
+# A future margin-based variant (using game_model.predicted_margin instead of total
+# deviation, per the follow-up noted above) remains the natural next thing to try -- but
+# any such attempt needs a shock large enough to matter against real player sigmas
+# (~0.3-0.85 in log space, per model.py's fitted marginals). The current shock is a
+# total_dev-scaled term with sd on the order of 0.003-0.004 in log space (sensitivity
+# ~0.03 times total_dev's own sd of ~0.1-0.15), which is too small by roughly two orders
+# of magnitude to move a player's distribution meaningfully regardless of its sign --
+# consistent with the ~zero within-game correlation measured directly above.
 JOINT_SENSITIVITY: dict[str, float] = {"pass_yds": 0.030, "rush_yds": 0.024, "rec_yds": 0.0}
 
 
