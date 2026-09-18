@@ -34,6 +34,28 @@ import numpy as np
 # predictions -- i.e. yardage should go UP with a higher predicted total, a positive
 # sensitivity. rec_yds calibrated to -0.045, the opposite direction, which is itself
 # a red flag independent of the NLL result above.
+#
+# GAME ENVIRONMENT ROUND 2 (2026-09-18): before trying a different mechanism, spiked
+# the specific hypothesis that this round's failure was a SHAPE problem -- shifting
+# mu by total_dev while leaving sigma fixed, when higher-total games might genuinely
+# be more variable (heteroskedastic), not just higher-mean. If true, a game-
+# environment-aware sigma (not just mu) would be the right round-2 design.
+#
+# Checked directly on real 3-season data (1-year walk-forward window): both
+# corr(residual, total_dev) AND corr(|residual|, total_dev) came back ~0 for all
+# three stats (|r| < 0.02 in every case) -- no heteroskedasticity to exploit, and the
+# plain mean-shift correlation is itself near-zero outside of calibrate_sensitivity()'s
+# recency-weighted regression. Combined with joint_sim.py's independent finding (the
+# same-game shared-shock mechanism's induced correlation was ~2 orders of magnitude
+# too small to matter against real player sigma), this is the third independent
+# measurement this project has made of total-based game-environment signal at the
+# player level, and all three converge on the same conclusion: it is not a shape
+# problem, the signal itself is too weak to be worth chasing further with this
+# family of approaches. Game Environment round 2 is closed as REJECTED on this
+# evidence -- no further round-2 spec was written. A genuinely different signal
+# (e.g. margin/game-script instead of total -- the one lead joint_sim.py's own
+# comment already flags for that module's own possible future) remains an
+# unexplored, real option if anyone wants to pick this up again later.
 SENSITIVITY: dict[str, float] = {"pass_yds": 0.020, "rush_yds": 0.008, "rec_yds": -0.045}
 
 
