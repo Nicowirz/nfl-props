@@ -169,6 +169,28 @@ improved, it's applied by default everywhere the model is used for a live predic
 just in `backtest`. `pass_yds` has no analogous covariate (a starting QB doesn't share pass
 attempts the way a WR/RB shares targets/carries within his own team) and is unaffected.
 
+### Low-sample QB variance widening (pass_yds) — applied by default
+
+`predict`, `parlay`, and `best-bet` widen a QB's predicted `sigma` (uncertainty) when he
+has fewer than 4 games of history at fit time (including a QB the model has never seen
+at all) -- a backup's rare start is inherently higher-variance than an established
+starter's steady-state games, and the model previously gave every QB the same fixed
+uncertainty regardless of how little is actually known about him. See
+`docs/superpowers/specs/2026-09-16-nfl-props-low-sample-sigma-design.md` for the original
+design, and git history for the full story of a real sigma-pool-contamination bug found
+and fixed in a follow-up round (the original implementation accidentally mixed low-sample
+residuals into the "normal" players' own sigma estimate).
+
+Validated (1-year lookback, real data, run 2026-09-17, n=693): NLL improved 1.3020 ->
+1.2396 (~4.8% better) and the top-decile calibration bucket moved from 2.89% to 3.61% --
+correctly *toward* the 10% target this time, unlike an earlier contaminated version of
+this same mechanism which moved the wrong direction and was kept inert. Read this
+honestly, though: with n=693 the calibration shift is a small, statistically thin signal
+(close to one standard error), and 3.61% remains well short of both the 10% target and
+the ~6.6% baseline the original backup-QB-blowout diagnostic was built against on a
+different data window. `rec_yds`/`rush_yds` already calibrate correctly at the top decile
+and are unaffected -- this only touches `pass_yds`.
+
 ### `--pace-adjust` (diagnostic only, not applied by default)
 
 `backtest --pace-adjust` re-scores the same walk-forward predictions after applying
