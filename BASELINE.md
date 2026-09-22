@@ -70,6 +70,56 @@ versions against this exact same methodology, not as an absolute judgment of rea
 betting quality — the NLL and calibration numbers above, and the real tracked
 `best-bet --log` / `grade` record (see README), are the more trustworthy signals for that.
 
+## targets (opportunity model, first validation)
+
+**Method:** `rate_backtest.walk_forward()` — true walk-forward, refit every `(season,
+week)` using only data strictly before that date, scored against a naive season-to-date-
+average baseline. Model: `rate_model.fit_poisson()`'s existing quasi-Poisson IRLS fit
+(player ability + opponent defense + home field + trailing target-share covariate),
+wired to the `targets` stat for the first time in this plan (see
+`docs/superpowers/plans/2026-09-22-nfl-props-opportunity-model-targets.md`).
+
+| Metric | Value |
+|---|---|
+| NLL (model / baseline) | 1.699028790877028 / 1.841225562020044 |
+| n | 6387 |
+
+Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrated):
+
+```
+                 n  mean_pit
+(-0.001, 0.1]  746  0.050632
+(0.1, 0.2]     711  0.150296
+(0.2, 0.3]     692  0.249419
+(0.3, 0.4]     681  0.348691
+(0.4, 0.5]     611  0.448234
+(0.5, 0.6]     628  0.547358
+(0.6, 0.7]     547  0.651389
+(0.7, 0.8]     552  0.750083
+(0.8, 0.9]     547  0.850367
+(0.9, 1.0]     672  0.954086
+```
+
+**Read honestly:** The targets model beats the naive season-to-date baseline by 0.14 NLL
+(~8.3% improvement), with calibration buckets well-distributed around the target 10%—
+this validates the quasi-Poisson fit for targets as a solid foundation for future
+ablations (snap_share, air_yards_share, team_pass_volume composition).
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+from nfl_props import data, rate_backtest
+stats = data.load_player_stats(seasons=3)
+start = (stats['date'].max() - timedelta(days=365)).date()
+df = rate_backtest.walk_forward(stats, 'targets', start, halflife_days=180.0, reg=5.0, min_games=200)
+print(rate_backtest.summarize(df))
+print(rate_backtest.calibration(df))
+"
+```
+
 ## Reproducing this baseline
 
 ```bash
