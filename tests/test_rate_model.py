@@ -128,3 +128,102 @@ def test_fit_poisson_recovers_share_coef():
     r = rate_model.fit_poisson(aug, "receptions", reg=0.05, halflife_days=100_000, min_games=50)
     assert r.share_coef is not None
     assert abs(r.share_coef - true_share_coef) < 0.5
+
+
+def _synthetic_targets(n_players=24, n_teams=8, games_per_player=16, seed=0, ability_override=None):
+    """Like _synthetic_poisson() but simulates the TARGETS column with true Poisson counts
+    (dispersion == 1), leaving `receptions` as an unused placeholder column -- a separate
+    fixture so the existing, already-approved receptions tests' fixture stays untouched.
+    """
+    rng = np.random.default_rng(seed)
+    players = [f"P{i}" for i in range(n_players)]
+    teams = [f"T{i}" for i in range(n_teams)]
+    ability = dict(zip(players, rng.normal(0, 0.3, n_players)))
+    if ability_override:
+        ability.update(ability_override)
+    defense = dict(zip(teams, rng.normal(0, 0.2, n_teams)))
+    intercept, home_field = 1.8, 0.05  # exp(1.8) ~= 6 targets/game baseline
+    player_team = {p: rng.choice(teams) for p in players}
+    rows = []
+    d = pd.Timestamp("2024-09-01")
+    for p in players:
+        team = player_team[p]
+        opp_pool = [t for t in teams if t != team]
+        for _ in range(games_per_player):
+            opp = rng.choice(opp_pool)
+            home = bool(rng.integers(0, 2))
+            eta = intercept + ability[p] + defense[opp] + (home_field if home else 0.0)
+            targets = float(rng.poisson(np.exp(eta)))
+            rows.append({
+                "player_id": p, "player_name": p, "position_group": "WR", "team": team,
+                "opponent_team": opp, "date": d, "home": home,
+                "targets": targets, "receptions": 0.0,
+            })
+            d += pd.Timedelta(days=1)
+    return pd.DataFrame(rows), players, teams, ability, defense, intercept, home_field
+
+
+def test_fit_poisson_recovers_ability_and_defense_for_targets():
+    df, players, teams, ability, defense, intercept, home_field = _synthetic_targets()
+    r = rate_model.fit_poisson(df, "targets", reg=0.05, halflife_days=100_000, min_games=50)
+    est_ability = np.array([r.ability[p] for p in players])
+    true_ability = np.array([ability[p] for p in players])
+    est_defense = np.array([r.defense[t] for t in teams])
+    true_defense = np.array([defense[t] for t in teams])
+    assert np.corrcoef(true_ability, est_ability)[0, 1] > 0.8
+    assert np.corrcoef(true_defense, est_defense)[0, 1] > 0.6
+    assert abs(r.home_field - home_field) < 0.15
+
+
+def _synthetic_targets_with_share(n_players=16, n_teams=8, games_per_player=14, seed=11, true_share_coef=1.2):
+    """Like _synthetic_with_share() but for the targets stat. Unlike receptions (whose
+    share-driving column "targets" differs from its own modeled column "receptions"),
+    targets' share-driving column IS its own modeled column (QUALIFY_COLUMN["targets"] ==
+    "targets") -- so trailing_share must be computed from the RAW seed targets BEFORE they
+    are overwritten by the simulated Poisson counts, and the returned frame keeps that
+    already-computed trailing_share rather than dropping it, since recomputing it from the
+    post-overwrite "targets" column would be circular (it would no longer reflect the share
+    values that actually generated the simulated counts).
+    """
+    rng = np.random.default_rng(seed)
+    players = [f"P{i}" for i in range(n_players)]
+    teams = [f"T{i}" for i in range(n_teams)]
+    ability = dict(zip(players, rng.normal(0, 0.2, n_players)))
+    defense = dict(zip(teams, rng.normal(0, 0.15, n_teams)))
+    intercept, home_field = 1.6, 0.05
+    player_team = {p: teams[i % n_teams] for i, p in enumerate(players)}
+    rows = []
+    d = pd.Timestamp("2024-09-01")
+    game_counter = 0
+    for _ in range(games_per_player):
+        for team in teams:
+            opp = rng.choice([t for t in teams if t != team])
+            home = bool(rng.integers(0, 2))
+            teammates = [p for p, t in player_team.items() if t == team]
+            game_id = f"g{game_counter}"
+            game_counter += 1
+            raw_targets = {p: float(rng.integers(2, 10)) for p in teammates}
+            for p in teammates:
+                rows.append({
+                    "player_id": p, "player_name": p, "position_group": "WR", "team": team,
+                    "opponent_team": opp, "game_id": game_id, "date": d, "home": home,
+                    "receptions": 0.0, "targets": raw_targets[p],
+                })
+        d += pd.Timedelta(days=7)
+    df = pd.DataFrame(rows)
+    aug = model.add_trailing_share(df, "targets", halflife_days=100_000)
+    rng2 = np.random.default_rng(seed + 1)
+    new_y = []
+    for _, row in aug.iterrows():
+        eta = (intercept + ability[row["player_id"]] + defense[row["opponent_team"]]
+              + (home_field if row["home"] else 0.0) + true_share_coef * row["trailing_share"])
+        new_y.append(rng2.poisson(np.exp(eta)))
+    aug["targets"] = np.array(new_y, dtype=float)
+    return aug, true_share_coef
+
+
+def test_fit_poisson_recovers_share_coef_for_targets():
+    aug, true_share_coef = _synthetic_targets_with_share()
+    r = rate_model.fit_poisson(aug, "targets", reg=0.05, halflife_days=100_000, min_games=50)
+    assert r.share_coef is not None
+    assert abs(r.share_coef - true_share_coef) < 0.5
