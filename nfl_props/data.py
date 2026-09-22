@@ -1,6 +1,8 @@
 """Download and cache NFL player game logs, schedules, and rosters from nflverse.
 
-URLs verified live against github.com/nflverse/nflverse-data on 2026-09-09.
+URLs verified live against github.com/nflverse/nflverse-data on 2026-09-09. Also
+downloads player-ID crosswalks, snap counts, play-by-play, and Next Gen Stats
+receiving; those additional sources were verified live on 2026-09-22.
 """
 from __future__ import annotations
 
@@ -18,9 +20,12 @@ ROSTER_URL = "https://github.com/nflverse/nflverse-data/releases/download/weekly
 PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
 SNAP_COUNTS_URL = "https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_{season}.csv"
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.csv.gz"
-NGS_RECEIVING_URL = "https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_{season}_receiving.csv.gz"
 PBP_KEEP = ["game_id", "season", "week", "posteam", "defteam", "pass", "receiver_player_id",
-           "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass"]
+            "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass"]
+NGS_RECEIVING_URL = "https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_{season}_receiving.csv.gz"
+NGS_RECEIVING_KEEP = ["player_gsis_id", "season", "week", "avg_cushion", "avg_separation",
+                      "avg_intended_air_yards", "percent_share_of_intended_air_yards",
+                      "catch_percentage", "avg_yac", "avg_yac_above_expectation"]
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 STATS_KEEP = [
@@ -140,7 +145,7 @@ def load_snap_counts(seasons: int = 3, refresh: bool = False, today: date | None
         max_age = 6 if season == cur else 24 * 365 * 10
         try:
             raw = _fetch(SNAP_COUNTS_URL.format(season=season),
-                        DATA_DIR / f"snap_counts_{season}.csv", max_age, refresh)
+                         DATA_DIR / f"snap_counts_{season}.csv", max_age, refresh)
             frames.append(raw[["game_id", "pfr_player_id", "position", "team", "offense_pct"]].copy())
         except urllib.error.HTTPError as e:
             if season == cur and e.code == 404:
@@ -156,8 +161,14 @@ def join_snap_counts(snaps: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame
     players crosswalk. A snap-count row with no crosswalk match is dropped, not a hard
     failure -- the same "skipped, not fatal" treatment the Kalshi feed already gives an
     unmatched player name.
+
+    Output includes a `team` column; the stats frame this will eventually be merged onto
+    (in a future plan) also has its own `team` column, so merging on
+    ["game_id", "player_id"] will produce `team_x`/`team_y` unless the caller renames or
+    drops one first.
     """
-    merged = snaps.merge(players, left_on="pfr_player_id", right_on="pfr_id", how="inner")
+    merged = snaps.merge(players, left_on="pfr_player_id", right_on="pfr_id", how="inner",
+                         validate="many_to_one")
     return merged[["game_id", "player_id", "team", "offense_pct"]].reset_index(drop=True)
 
 
@@ -200,9 +211,9 @@ def aggregate_pbp_receiving(pbp: pd.DataFrame) -> pd.DataFrame:
     targets = pbp[(pbp["pass"] == 1) & pbp["receiver_player_id"].notna()]
     g = targets.groupby(["game_id", "receiver_player_id"], as_index=False)
     out = g.agg(targets_pbp=("receiver_player_id", "size"),
-               air_yards_pbp=("air_yards", "sum"),
-               epa_per_target=("epa", "mean"),
-               xyac_epa_per_target=("xyac_epa", "mean"))
+                air_yards_pbp=("air_yards", "sum"),
+                epa_per_target=("epa", "mean"),
+                xyac_epa_per_target=("xyac_epa", "mean"))
     return out.rename(columns={"receiver_player_id": "player_id"})
 
 
@@ -216,17 +227,22 @@ def aggregate_pbp_team_pass_rate(pbp: pd.DataFrame) -> pd.DataFrame:
     return out.rename(columns={"posteam": "team", "pass_oe": "pass_oe_game"})
 
 
-NGS_RECEIVING_KEEP = ["player_gsis_id", "season", "week", "avg_cushion", "avg_separation",
-                      "avg_intended_air_yards", "percent_share_of_intended_air_yards",
-                      "catch_percentage", "avg_yac", "avg_yac_above_expectation"]
-
-
 def load_ngs_receiving(seasons: int = 3, refresh: bool = False, today: date | None = None) -> pd.DataFrame:
     """Next Gen Stats receiving: separation, cushion, air-yards share, catch%, YAC over
-    expectation. Confirmed live only through the 2024 season as of 2026-09-22 -- current
-    seasons may not be published under this release tag yet, same
-    skip-missing-current-season handling as load_player_stats(), so callers must not
-    assume the requested season count is fully satisfied.
+    expectation. A 200 response does NOT mean usable weekly data -- verified live on
+    2026-09-22, the cached 2024 file (`data/ngs_receiving_2024.csv.gz`) contains only 8
+    rows, 4 unique players, weeks [0, 1], with week 0 and week 1 carrying byte-identical
+    values for the same 4 players. That is a stub/aggregate release, not real weekly NGS
+    data. Callers MUST check actual row count and week granularity before depending on
+    this for a real weekly covariate; do not assume a season "being live" means it's
+    usable. If a weekly air-yards-share covariate is needed, `aggregate_pbp_receiving`'s
+    `air_yards_pbp` column already supports deriving one directly from play-by-play,
+    without needing NGS at all.
+
+    Keys on (player_id, season, week), NOT game_id like this file's other three new
+    loaders (`join_snap_counts`, `aggregate_pbp_receiving`, `aggregate_pbp_team_pass_rate`
+    all key on game_id) -- a caller merging this onto the same frame needs a different
+    join key than those three.
     """
     cur = current_season_start(today)
     frames = []

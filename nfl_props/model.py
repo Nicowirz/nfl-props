@@ -191,6 +191,8 @@ def add_trailing_snap_share(stats: pd.DataFrame, halflife_days: float = 180.0) -
 
     Returns rows sorted by (player_id, date), same caveat as add_trailing_share().
     """
+    if "offense_pct" not in stats.columns:
+        raise ValueError("add_trailing_snap_share requires an 'offense_pct' column")
     df = stats.sort_values(["player_id", "date"]).copy()
     trailing = np.full(len(df), np.nan)
     n_prior = np.zeros(len(df), dtype=int)

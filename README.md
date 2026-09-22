@@ -419,7 +419,8 @@ as validated until it does.
 ## Layout
 
 ```
-nfl_props/data.py       download + cache nflverse player stats, schedules, rosters
+nfl_props/data.py       download + cache nflverse player stats, schedules, rosters,
+                        player-ID crosswalk, snap counts, play-by-play, NGS receiving
 nfl_props/model.py      ridge fit per stat category, shrinkage, recency weighting
 nfl_props/markets.py    log-normal yardage distribution -> P(over/under line), devig, odds formats
 nfl_props/parlay.py     leg evaluation (edge, EV, Kelly), parlay enumeration
