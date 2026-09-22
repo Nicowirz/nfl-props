@@ -128,15 +128,27 @@ print(rate_backtest.calibration(df))
 
 ### snap_share ablation
 
-**Commit:** `3236255` (master, run 2026-09-22). **Method:** same
-`rate_backtest.walk_forward()` setup as above, compared with vs. without
-`trailing_snap_share` (from `data.stats_with_trailing_snap_share()`) as an
-`extra_covariates` column, per `docs/superpowers/plans/2026-09-22-nfl-props-opportunity-model-snap-share.md`.
+**Commit:** `3386819` (master, run 2026-09-22) -- the commit that added
+`data.stats_with_trailing_snap_share()`; the result below is not reproducible at any
+earlier commit. **Method:** same `rate_backtest.walk_forward()` setup as the `targets`
+section above, with one additional step: `stats = data.stats_with_trailing_snap_share(stats,
+seasons=3)` before calling `walk_forward`, comparing with vs. without `trailing_snap_share`
+as an `extra_covariates` column, per
+`docs/superpowers/plans/2026-09-22-nfl-props-opportunity-model-snap-share.md`. Join
+coverage: only 20/13,334 relevant rows (3/7,123 qualifying rows) had no snap-count/
+crosswalk match and fell back to `offense_pct=0.0` -- not a material share of the input.
 
-| Run | NLL model | NLL baseline |
-|---|---|---|
-| Base (trailing target-share only) | 1.699028790877028 | 1.841225562020044 |
-| + snap_share | 1.6892137371486382 | 1.901954381214095 |
+| Run | n | NLL model | NLL baseline |
+|---|---|---|---|
+| Base (trailing target-share only) | 6387 | 1.699028790877028 | 1.841225562020044 |
+| + snap_share | 6387 | 1.6892137371486382 | 1.901954381214095 |
+
+Note: `NLL baseline` is **not** a fixed reference across the two rows -- `rate_backtest`'s
+naive baseline is derived from the same fitted position-group intercepts the model uses,
+which shift when an uncentered covariate (`trailing_snap_share`, mean ~0.51) is added.
+Only the model-vs-model `NLL model` comparison (1.699029 vs. 1.689214) is a valid read
+here; the baseline column moving is an artifact of the covariate addition, not evidence
+the edge over baseline widened.
 
 **Read honestly:** Adding `trailing_snap_share` as an extra covariate improved NLL model
 from 1.699029 to 1.689214 -- a real but small gain of ~0.00982 nats (~0.6% relative
@@ -149,6 +161,27 @@ justify making `trailing_snap_share` a default covariate for the `targets` model
 further validation (e.g. across a longer window, or with a significance check) first.
 This ablation result alone does not ship anything live -- no CLI command reads either of
 these covariate configurations yet.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+from nfl_props import data, rate_backtest
+
+stats = data.load_player_stats(seasons=3)
+stats = data.stats_with_trailing_snap_share(stats, seasons=3)
+start = (stats['date'].max() - timedelta(days=365)).date()
+
+base = rate_backtest.walk_forward(stats, 'targets', start, halflife_days=180.0, reg=5.0, min_games=200)
+print('Base:', rate_backtest.summarize(base))
+
+with_snap = rate_backtest.walk_forward(stats, 'targets', start, halflife_days=180.0, reg=5.0, min_games=200,
+                                       extra_covariates=['trailing_snap_share'])
+print('+ snap_share:', rate_backtest.summarize(with_snap))
+"
+```
 
 ## Reproducing this baseline
 

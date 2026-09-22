@@ -108,6 +108,13 @@ def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halfl
     missing = [c for c in extra_covariates if c not in df.columns]
     if missing:
         raise ValueError(f"extra_covariates column(s) not in stats: {missing}")
+    non_finite = [c for c in extra_covariates if not np.isfinite(df[c].to_numpy(dtype=float)).all()]
+    if non_finite:
+        raise ValueError(f"extra_covariates column(s) contain non-finite values: {non_finite}")
+    if len(extra_covariates) != len(set(extra_covariates)):
+        raise ValueError(f"extra_covariates contains duplicate column names: {extra_covariates}")
+    if has_share and "trailing_share" in extra_covariates:
+        raise ValueError('"trailing_share" is already a dedicated covariate for share stats; do not list it in extra_covariates')
     n_share_extra = 1 if has_share else 0
     n_extra = n_share_extra + len(extra_covariates)
     X = np.zeros((n, n_g + 1 + n_p + n_t + n_extra))

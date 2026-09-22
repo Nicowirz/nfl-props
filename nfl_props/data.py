@@ -282,6 +282,7 @@ def stats_with_trailing_snap_share(stats: pd.DataFrame, seasons: int = 3, refres
     players = load_players(refresh=refresh)
     joined = join_snap_counts(snaps, players)
     merged = stats.merge(joined[["game_id", "player_id", "offense_pct"]],
-                         on=["game_id", "player_id"], how="left")
+                         on=["game_id", "player_id"], how="left", validate="m:1")
     merged["offense_pct"] = merged["offense_pct"].fillna(0.0)
-    return model.add_trailing_snap_share(merged, halflife_days=halflife_days)
+    result = model.add_trailing_snap_share(merged, halflife_days=halflife_days)
+    return result.drop(columns=["offense_pct"])
