@@ -101,7 +101,7 @@ Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrate
 ```
 
 **Read honestly:** The targets model beats the naive season-to-date baseline by 0.14 NLL
-(~8.3% improvement), with calibration buckets well-distributed around the target 10%—
+(~7.7% improvement), with calibration buckets well-distributed around the target 10%—
 this validates the quasi-Poisson fit for targets as a solid foundation for future
 ablations (snap_share, air_yards_share, team_pass_volume composition).
 
