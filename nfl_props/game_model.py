@@ -256,7 +256,7 @@ def fit_pass_volume(games: pd.DataFrame, team_pass_rate: pd.DataFrame, as_of: da
     points scored/allowed are.
     """
     sched = games[["game_id", "gameday", "home_team", "away_team", "neutral"]].dropna(subset=["gameday"])
-    df = team_pass_rate.merge(sched, on="game_id", how="inner")
+    df = team_pass_rate.merge(sched, on="game_id", how="inner").dropna(subset=["pass_oe_game"])
     df["home"] = (df["team"] == df["home_team"]) & (~df["neutral"])
     if as_of is not None:
         df = df[df["gameday"] < pd.Timestamp(as_of)]

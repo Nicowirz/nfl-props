@@ -19,12 +19,13 @@ def _synthetic_multi_week(n_players=10, n_teams=4, weeks=16, seed=0):
             team = player_team[p]
             opp = rng.choice([t for t in teams if t != team])
             home = bool(rng.integers(0, 2))
+            game_id = f"{team}_{opp}_{week}"
             lam = np.exp(intercept + ability[p] + defense[opp])
             receptions = float(rng.poisson(lam))
             rows.append({
                 "player_id": p, "player_name": p, "position_group": "WR", "team": team,
                 "opponent_team": opp, "season": 2024, "week": week, "date": d, "home": home,
-                "receptions": receptions, "targets": 6.0,
+                "receptions": receptions, "targets": 6.0, "game_id": game_id,
             })
         d += pd.Timedelta(days=7)
     return pd.DataFrame(rows)
@@ -53,3 +54,20 @@ def test_calibration_bins_cover_all_predictions():
     preds = rate_backtest.walk_forward(df, "receptions", start, halflife_days=100_000, min_games=20)
     table = rate_backtest.calibration(preds)
     assert table["n"].sum() == len(preds)
+
+
+def test_walk_forward_targets_share_branch_is_finite():
+    """Regression guard for the exact seam that produced a sign-inverted share
+    coefficient once already in this plan (Task 2): walk_forward's SHARE_STATS branch
+    (model.add_trailing_share) only activates when a game_id column is present. Before
+    this test, no test in this file exercised that branch for any stat -- for "targets"
+    specifically, the share-driving column and the modeled column are the same column
+    (model.QUALIFY_COLUMN["targets"] == "targets"), which is exactly what made the earlier
+    bug possible.
+    """
+    df = _synthetic_multi_week()
+    start = df["date"].iloc[len(df) // 2].date()
+    preds = rate_backtest.walk_forward(df, "targets", start, halflife_days=100_000, min_games=20)
+    s = rate_backtest.summarize(preds)
+    assert np.isfinite(s["nll_model"])
+    assert np.isfinite(s["nll_baseline"])

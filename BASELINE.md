@@ -72,12 +72,18 @@ betting quality — the NLL and calibration numbers above, and the real tracked
 
 ## targets (opportunity model, first validation)
 
-**Method:** `rate_backtest.walk_forward()` — true walk-forward, refit every `(season,
-week)` using only data strictly before that date, scored against a naive season-to-date-
-average baseline. Model: `rate_model.fit_poisson()`'s existing quasi-Poisson IRLS fit
-(player ability + opponent defense + home field + trailing target-share covariate),
-wired to the `targets` stat for the first time in this plan (see
-`docs/superpowers/plans/2026-09-22-nfl-props-opportunity-model-targets.md`).
+**Commit:** `47729de` (master, 2026-09-22). **Data window:** 3 seasons of real nflverse
+data, 1-year walk-forward lookback anchored to the most recent date in the loaded stats
+at run time, run 2026-09-22. **Method:** `rate_backtest.walk_forward()` (not
+`backtest.walk_forward()`, which the rest of this file uses) — true walk-forward, refit
+every `(season, week)` using only data strictly before that date, scored against a naive
+season-to-date-average baseline. Model: `rate_model.fit_poisson()`'s existing quasi-Poisson
+IRLS fit (player ability + opponent defense + home field + trailing target-share
+covariate), wired to the `targets` stat for the first time in this plan (see
+`docs/superpowers/plans/2026-09-22-nfl-props-opportunity-model-targets.md`). **Inert:** no
+CLI command (`predict`/`parlay`/`best-bet`/`fantasy-predict`) reads this model yet — this
+is a research checkpoint, not a shipping decision, matching how this file already treats
+`joint_sim.py` above.
 
 | Metric | Value |
 |---|---|
