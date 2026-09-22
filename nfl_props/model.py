@@ -182,6 +182,44 @@ def current_trailing_share(stats: pd.DataFrame, stat: str, player_id: str,
     return _weighted_share(df["_share"].to_numpy(dtype=float), days_ago, halflife_days)
 
 
+def add_trailing_snap_share(stats: pd.DataFrame, halflife_days: float = 180.0) -> pd.DataFrame:
+    """Add a "trailing_snap_share" column: each row's recency-weighted average offense
+    snap share over that PLAYER's own strictly-prior games only -- a row's own game never
+    contributes to its own trailing_snap_share, mirroring add_trailing_share()'s leakage
+    safety exactly. Unlike add_trailing_share(), `offense_pct` (from
+    data.join_snap_counts()) is already a share -- no team-total denominator to compute.
+
+    Returns rows sorted by (player_id, date), same caveat as add_trailing_share().
+    """
+    df = stats.sort_values(["player_id", "date"]).copy()
+    trailing = np.full(len(df), np.nan)
+    n_prior = np.zeros(len(df), dtype=int)
+    row_pos = {idx: i for i, idx in enumerate(df.index)}
+    for player_id, group in df.groupby("player_id", sort=False):
+        dates = group["date"].to_numpy()
+        shares = group["offense_pct"].to_numpy(dtype=float)
+        for i, idx in enumerate(group.index):
+            pos = row_pos[idx]
+            n_prior[pos] = i
+            if i == 0:
+                continue
+            days_ago = (dates[i] - dates[:i]).astype("timedelta64[D]").astype(float)
+            trailing[pos] = _weighted_share(shares[:i], days_ago, halflife_days)
+
+    df = df.assign(trailing_snap_share=trailing, _n_prior=n_prior)
+
+    enough = df[df["_n_prior"] >= NEW_PLAYER_GAMES]
+    group_fallback = enough.groupby("position_group")["trailing_snap_share"].mean()
+    overall_fallback = float(enough["trailing_snap_share"].mean()) if len(enough) else 0.0
+    low = df["_n_prior"] < NEW_PLAYER_GAMES
+    no_value = df["trailing_snap_share"].isna()
+    need_fallback = low & no_value
+    df.loc[need_fallback, "trailing_snap_share"] = df.loc[need_fallback, "position_group"].map(group_fallback).fillna(overall_fallback)
+    df["trailing_snap_share"] = df["trailing_snap_share"].fillna(overall_fallback)
+
+    return df.drop(columns=["_n_prior"])
+
+
 @dataclass
 class Ratings:
     stat: str

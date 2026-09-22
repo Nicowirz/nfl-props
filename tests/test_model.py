@@ -274,6 +274,45 @@ def test_add_trailing_share_never_returns_nan():
     assert out["trailing_share"].notna().all()
 
 
+def _snap_share_stats():
+    return pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.60},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-08"), "position_group": "WR", "offense_pct": 0.80},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-15"), "position_group": "WR", "offense_pct": 0.90},
+        {"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.50},
+    ])
+
+
+def test_add_trailing_snap_share_never_uses_the_rows_own_game():
+    df = _snap_share_stats()
+    out = model.add_trailing_snap_share(df, halflife_days=180.0)
+    row1_sep15 = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-15"))].iloc[0]
+    # Changing this row's own offense_pct must not change its own trailing_snap_share.
+    df2 = df.copy()
+    df2.loc[(df2["player_id"] == "P1") & (df2["date"] == pd.Timestamp("2025-09-15")), "offense_pct"] = 0.01
+    out2 = model.add_trailing_snap_share(df2, halflife_days=180.0)
+    row1_sep15_changed = out2[(out2["player_id"] == "P1") & (out2["date"] == pd.Timestamp("2025-09-15"))].iloc[0]
+    assert row1_sep15["trailing_snap_share"] == pytest.approx(row1_sep15_changed["trailing_snap_share"])
+
+
+def test_add_trailing_snap_share_matches_hand_computed_weighted_average():
+    df = _snap_share_stats()
+    out = model.add_trailing_snap_share(df, halflife_days=180.0)
+    row = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-15"))].iloc[0]
+    days_ago = np.array([14.0, 7.0])  # from 2025-09-01 and 2025-09-08
+    shares = np.array([0.60, 0.80])
+    w = 0.5 ** (days_ago / 180.0)
+    expected = float(np.sum(w * shares) / np.sum(w))
+    assert row["trailing_snap_share"] == pytest.approx(expected)
+
+
+def test_add_trailing_snap_share_low_history_uses_group_fallback():
+    df = _snap_share_stats()
+    out = model.add_trailing_snap_share(df, halflife_days=180.0)
+    first_game = out[(out["player_id"] == "P2") & (out["date"] == pd.Timestamp("2025-09-01"))].iloc[0]
+    assert not np.isnan(first_game["trailing_snap_share"])
+
+
 def test_current_trailing_share_matches_independent_calculation():
     df, p1_targets = _synthetic_share_games(n_prior=6)
     as_of = p1_targets[-1][0] + pd.Timedelta(days=7)  # one week after P1's last game
