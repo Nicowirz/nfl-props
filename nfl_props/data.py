@@ -15,6 +15,7 @@ import pandas as pd
 STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 GAMES_URL = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
 ROSTER_URL = "https://github.com/nflverse/nflverse-data/releases/download/weekly_rosters/roster_weekly_{season}.csv"
+PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 STATS_KEEP = [
@@ -111,3 +112,13 @@ def load_rosters(season: int, week: int | None = None, refresh: bool = False) ->
     if week is not None:
         out = out[out["week"] == week]
     return out.dropna(subset=["player_id"]).reset_index(drop=True)
+
+
+def load_players(refresh: bool = False) -> pd.DataFrame:
+    """gsis_id <-> pfr_id crosswalk (nflverse's `players` release). Needed to join
+    snap_counts, which identifies players by pfr_id, onto the rest of this pipeline's
+    gsis_id-keyed `player_id`.
+    """
+    raw = _fetch(PLAYERS_URL, DATA_DIR / "players.csv", max_age_hours=24 * 30, refresh=refresh)
+    out = raw[["gsis_id", "pfr_id"]].dropna().drop_duplicates()
+    return out.rename(columns={"gsis_id": "player_id"}).reset_index(drop=True)
