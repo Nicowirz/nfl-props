@@ -18,6 +18,7 @@ ROSTER_URL = "https://github.com/nflverse/nflverse-data/releases/download/weekly
 PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
 SNAP_COUNTS_URL = "https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_{season}.csv"
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.csv.gz"
+NGS_RECEIVING_URL = "https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_{season}_receiving.csv.gz"
 PBP_KEEP = ["game_id", "season", "week", "posteam", "defteam", "pass", "receiver_player_id",
            "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass"]
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -213,3 +214,33 @@ def aggregate_pbp_team_pass_rate(pbp: pd.DataFrame) -> pd.DataFrame:
     passes = pbp[pbp["pass"] == 1]
     out = passes.groupby(["game_id", "posteam"], as_index=False)["pass_oe"].mean()
     return out.rename(columns={"posteam": "team", "pass_oe": "pass_oe_game"})
+
+
+NGS_RECEIVING_KEEP = ["player_gsis_id", "season", "week", "avg_cushion", "avg_separation",
+                      "avg_intended_air_yards", "percent_share_of_intended_air_yards",
+                      "catch_percentage", "avg_yac", "avg_yac_above_expectation"]
+
+
+def load_ngs_receiving(seasons: int = 3, refresh: bool = False, today: date | None = None) -> pd.DataFrame:
+    """Next Gen Stats receiving: separation, cushion, air-yards share, catch%, YAC over
+    expectation. Confirmed live only through the 2024 season as of 2026-09-22 -- current
+    seasons may not be published under this release tag yet, same
+    skip-missing-current-season handling as load_player_stats(), so callers must not
+    assume the requested season count is fully satisfied.
+    """
+    cur = current_season_start(today)
+    frames = []
+    for season in range(cur - seasons + 1, cur + 1):
+        max_age = 6 if season == cur else 24 * 365 * 10
+        try:
+            raw = _fetch(NGS_RECEIVING_URL.format(season=season),
+                        DATA_DIR / f"ngs_receiving_{season}.csv.gz", max_age, refresh)
+            frames.append(raw[[c for c in NGS_RECEIVING_KEEP if c in raw.columns]].copy())
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue
+            raise
+    if not frames:
+        return pd.DataFrame(columns=["player_id"] + NGS_RECEIVING_KEEP[1:])
+    df = pd.concat(frames, ignore_index=True)
+    return df.rename(columns={"player_gsis_id": "player_id"})
