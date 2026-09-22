@@ -2,7 +2,7 @@ import pytest
 
 from nfl_props.game_markets import moneyline_prob, prob_margin_over, prob_total_over
 from nfl_props.parlay import (GameLeg, build_game_parlays, evaluate_game_legs,
-                              game_legs_from_csv)
+                              game_legs_from_csv, model_book_gap)
 
 
 def _distributions():
@@ -93,3 +93,25 @@ def test_game_legs_from_csv_requires_line_for_spread(tmp_path):
     p.write_text("home_team,away_team,market,selection,line,odds\nSEA,NE,spread,home,,-110\n")
     with pytest.raises(ValueError):
         game_legs_from_csv(str(p))
+
+
+def test_build_game_parlays_excludes_implausible_model_book_disagreement():
+    legs = [
+        GameLeg("SEA", "NE", "moneyline", "home", None, 1.91),
+        GameLeg("SEA", "NE", "moneyline", "away", None, 1.91),
+        GameLeg("KC", "LAC", "moneyline", "home", None, 5.0),
+        GameLeg("KC", "LAC", "moneyline", "away", None, 1.10),
+    ]
+    dists = {
+        ("SEA", "NE"): (3.0, 13.0, 44.5, 10.0),   # model ~= book here (both near even)
+        ("KC", "LAC"): (25.0, 13.0, 47.0, 10.0),  # model thinks KC is a lock; book disagrees
+    }
+    evals = evaluate_game_legs(legs, dists, market_weight=0.0)
+    suspect = next(e for e in evals if e.leg.home_team == "KC" and e.leg.selection == "home")
+    normal = next(e for e in evals if e.leg.home_team == "SEA" and e.leg.selection == "home")
+    assert model_book_gap(suspect) > 0.30
+    assert suspect.edge > normal.edge
+
+    parlays = build_game_parlays(evals, min_legs=2, max_legs=2, min_edge=-1.0, max_model_gap=0.30)
+    for pl in parlays:
+        assert all(le.leg.home_team != "KC" for le in pl.legs)

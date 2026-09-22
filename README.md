@@ -30,7 +30,7 @@ All commands: `.venv\Scripts\python -m nfl_props <command>`.
 | `update` | force re-download of stats, schedules, rosters |
 | `ratings` | player ability + opponent defense ratings per stat category |
 | `predict --week N` | projected yardage distribution for that week's matchups |
-| `parlay [--odds file.csv]` | rank legs by edge against live Kalshi prices (no file needed to start), build ranked parlays; `--odds` overrides/supplements the feed, `--no-feed-odds` disables it |
+| `parlay [--odds file.csv] [--max-model-gap G]` | rank legs by edge against live Kalshi prices (no file needed to start), build ranked parlays; `--odds` overrides/supplements the feed, `--no-feed-odds` disables it, `--max-model-gap` tunes the plausibility filter below (default `0.30`) |
 | `backtest [--pace-adjust]` | walk-forward evaluation: log-likelihood and calibration vs. a naive baseline; `--pace-adjust` applies a calibrated adjustment to player predictions based on the game's predicted scoring total, for comparison against the unadjusted model -- see "What the backtest says" below, as calibrated it does not improve NLL and is not applied anywhere else |
 
 ### Typical week
@@ -56,7 +56,29 @@ need no API key; this project only ever reads prices, it never places an order.
   player/stat/line and adds anything the feed doesn't have.
 - Real-time only -- not wired into `backtest`, which needs historical closing lines.
 - Some Kalshi contracts are thin (wide bid/ask spreads on far-out-of-the-money lines);
-  treat those edges with extra skepticism, the tool doesn't filter them out.
+  see the plausibility filter below for how those are handled.
+
+### Model/book plausibility filter (`--max-model-gap`, default `0.30`) -- applied by default
+
+`parlay`, `game-bets`, and `best-bet` exclude any leg where the model's probability and the
+devigged book probability (or the raw single-side implied probability, when only one side
+of a line is priced) disagree by more than `--max-model-gap` (30 percentage points by
+default). A gap that large is far more often a stale/thin Kalshi contract or a model blind
+spot (see "Known limitations" below -- no starter/depth-chart awareness, no
+injury/inactive-list awareness) than genuine edge, so it's excluded rather than allowed to
+dominate a ranking purely because the raw edge number looks huge.
+
+- `parlay`/`game-bets` print every leg's model/book gap and mark excluded rows
+  `[excluded: model/book gap]`, with a summary count -- nothing is silently dropped from
+  the diagnostic table, only from the ranked parlay candidates below it.
+- `best-bet` applies the same filter before picking its single highest-edge leg per
+  market; if every available leg fails the filter, it says so instead of recommending one.
+- Set `--max-model-gap 1.0` to disable the filter entirely (restores the pre-filter
+  behavior of ranking purely on raw edge).
+- This is a plausibility heuristic, not a validated calibration result -- unlike the
+  usage-share covariate or low-sample sigma widening below, it hasn't been backtested
+  against historical outcomes (Kalshi's feed is real-time only, so there's no historical
+  price to backtest against). Treat the 30pp default as a sanity cap, not a tuned number.
 
 ### Odds file (`--odds`, optional -- overrides/supplements the Kalshi feed)
 
@@ -277,9 +299,9 @@ a player-prop leg can't be combined into one parlay ticket yet.
 |---|---|
 | `game-ratings` | team power ratings (margin) + scoring/allowed ratings (totals) |
 | `game-predict --week N` | moneyline/spread/total fair probabilities for that week's games |
-| `game-bets --week N [--odds file.csv]` | edge vs. the real reference line built into `games.csv`, no CSV required to start; `--odds` overrides with your own prices |
+| `game-bets --week N [--odds file.csv] [--max-model-gap G]` | edge vs. the real reference line built into `games.csv`, no CSV required to start; `--odds` overrides with your own prices; `--max-model-gap` tunes the plausibility filter (see above, default `0.30`) |
 | `game-backtest` | walk-forward evaluation vs. a naive baseline (home-field-only for margin, league-average for totals) |
-| `best-bet --week N [--odds file.csv] [--log]` | the single highest-edge pick in each market: one game bet (from the real reference line) and one player prop (from the Kalshi feed by default, or `--odds`); `--log` appends the pick(s) to `data/picks_log.csv` |
+| `best-bet --week N [--odds file.csv] [--log] [--max-model-gap G]` | the single highest-edge pick in each market: one game bet (from the real reference line) and one player prop (from the Kalshi feed by default, or `--odds`); `--log` appends the pick(s) to `data/picks_log.csv`; `--max-model-gap` applies the same plausibility filter before picking |
 | `grade` | grade every logged pick whose game has finished against the real result, print the log with results, and show the running record/win rate/ROI |
 
 ### Tracking picks (`best-bet --log` / `grade`)

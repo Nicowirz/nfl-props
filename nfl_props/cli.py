@@ -10,13 +10,13 @@ from . import backtest, data, game_backtest, game_model, kalshi, model, pace, tr
 from .game_markets import moneyline_prob
 from .markets import fair_odds, mean_yards, median_yards, parse_odds, prob_over, to_american
 from .parlay import (GameLeg, Leg, build_game_parlays, build_parlays, evaluate_game_legs,
-                     evaluate_legs, game_legs_from_csv, legs_from_csv)
+                     evaluate_legs, game_legs_from_csv, legs_from_csv, model_book_gap)
 
 STATS = ("pass_yds", "rush_yds", "rec_yds")
 POSITION_GROUPS = {"pass_yds": {"QB"}, "rush_yds": {"RB", "FB", "QB"}, "rec_yds": {"WR", "TE", "RB"}}
 
 DEFAULTS = {"seasons": 3, "halflife": 180.0, "reg": 5.0, "market_weight": 0.5,
-           "game_halflife": 365.0, "game_reg": 3.0}
+           "game_halflife": 365.0, "game_reg": 3.0, "max_model_gap": 0.30}
 
 
 def _load(args) -> pd.DataFrame:
@@ -156,13 +156,20 @@ def cmd_parlay(args):
     for e in evals:
         book = f"{e.p_book:6.1%}" if e.p_book is not None else "   n/a"
         flag = "" if e.devig_exact else " *"
+        suspect = " [excluded: model/book gap]" if model_book_gap(e) > args.max_model_gap else ""
         print(f"{e.leg.label:45} {e.leg.odds:6.2f} {to_american(e.leg.odds):>6} {e.p:6.1%} "
-              f"{e.p_model:6.1%} {book} {e.edge:+7.1%}{flag}")
+              f"{e.p_model:6.1%} {book} {e.edge:+7.1%}{flag}{suspect}")
     if any(not e.devig_exact for e in evals):
         print("  * other side not supplied; book prob approximated with a 5% margin")
+    n_excluded = sum(1 for e in evals if model_book_gap(e) > args.max_model_gap)
+    if n_excluded:
+        print(f"  {n_excluded} leg(s) excluded from parlay candidates below: model/book "
+              f"probability gap exceeds {args.max_model_gap:.0%} (thin/stale market or model "
+              f"blind spot -- see README known limitations). Pass --max-model-gap to change.")
 
     parlays = build_parlays(evals, min_legs=args.min_legs, max_legs=args.max_legs,
-                            max_candidates=args.candidates, min_edge=args.min_edge, top=args.top)
+                            max_candidates=args.candidates, min_edge=args.min_edge, top=args.top,
+                            max_model_gap=args.max_model_gap)
     print(f"\nTop parlays ({args.min_legs}-{args.max_legs} legs, edge > {args.min_edge:.1%}):")
     if not parlays:
         print("  none: no leg clears the edge threshold. Try --min-edge 0.")
@@ -302,13 +309,19 @@ def cmd_game_bets(args):
     for e in evals:
         book = f"{e.p_book:6.1%}" if e.p_book is not None else "   n/a"
         flag = "" if e.devig_exact else " *"
+        suspect = " [excluded: model/book gap]" if model_book_gap(e) > args.max_model_gap else ""
         print(f"{e.leg.label:40} {e.leg.odds:6.2f} {to_american(e.leg.odds):>6} {e.p:6.1%} "
-              f"{e.p_model:6.1%} {book} {e.edge:+7.1%}{flag}")
+              f"{e.p_model:6.1%} {book} {e.edge:+7.1%}{flag}{suspect}")
     if any(not e.devig_exact for e in evals):
         print("  * other side not supplied; book prob approximated with a 5% margin")
+    n_excluded = sum(1 for e in evals if model_book_gap(e) > args.max_model_gap)
+    if n_excluded:
+        print(f"  {n_excluded} leg(s) excluded from parlay candidates below: model/book "
+              f"probability gap exceeds {args.max_model_gap:.0%}. Pass --max-model-gap to change.")
 
     parlays = build_game_parlays(evals, min_legs=args.min_legs, max_legs=args.max_legs,
-                                 max_candidates=args.candidates, min_edge=args.min_edge, top=args.top)
+                                 max_candidates=args.candidates, min_edge=args.min_edge, top=args.top,
+                                 max_model_gap=args.max_model_gap)
     print(f"\nTop parlays ({args.min_legs}-{args.max_legs} legs, edge > {args.min_edge:.1%}):")
     if not parlays:
         print("  none: no leg clears the edge threshold. Try --min-edge 0.")
@@ -368,8 +381,9 @@ def cmd_best_bet(args):
     print(f"=== Best bet of the week (season {args.season}, week {args.week}) ===\n")
     log_rows = []
     print("Game market:")
-    if game_evals:
-        best_game = max(game_evals, key=lambda e: e.edge)
+    plausible_game_evals = [e for e in game_evals if model_book_gap(e) <= args.max_model_gap]
+    if plausible_game_evals:
+        best_game = max(plausible_game_evals, key=lambda e: e.edge)
         print(f"  {best_game.leg.label}")
         print(f"  odds {best_game.leg.odds:.2f} ({to_american(best_game.leg.odds)})  "
               f"model {best_game.p_model:6.1%}  edge {best_game.edge:+.1%}  EV {best_game.ev:+.1%}")
@@ -380,6 +394,10 @@ def cmd_best_bet(args):
             "line": best_game.leg.line if best_game.leg.line is not None else 0.0,
             "odds": best_game.leg.odds, "p_model": best_game.p_model, "edge": best_game.edge,
         })
+    elif game_evals:
+        print(f"  no game leg passed the plausibility filter (model/book gap <= "
+              f"{args.max_model_gap:.0%}) -- every available leg's price disagreed with the "
+              f"model by more than that. Pass --max-model-gap to change.")
     else:
         print("  no legs available (games.csv had no odds for this week).")
 
@@ -399,16 +417,22 @@ def cmd_best_bet(args):
     else:
         mu_sigma = _mu_sigma_for_legs(prop_legs, stats, roster, upcoming, args)
         prop_evals = evaluate_legs(prop_legs, mu_sigma, market_weight=args.market_weight)
-        best_prop = max(prop_evals, key=lambda e: e.edge)
-        print(f"  {best_prop.leg.label}")
-        print(f"  odds {best_prop.leg.odds:.2f} ({to_american(best_prop.leg.odds)})  "
-              f"model {best_prop.p_model:6.1%}  edge {best_prop.edge:+.1%}  EV {best_prop.ev:+.1%}")
-        log_rows.append({
-            "season": args.season, "week": args.week, "market": best_prop.leg.stat,
-            "subject": best_prop.leg.player, "selection": best_prop.leg.selection,
-            "line": best_prop.leg.line, "odds": best_prop.leg.odds,
-            "p_model": best_prop.p_model, "edge": best_prop.edge,
-        })
+        plausible_prop_evals = [e for e in prop_evals if model_book_gap(e) <= args.max_model_gap]
+        if not plausible_prop_evals:
+            print(f"  no player prop passed the plausibility filter (model/book gap <= "
+                  f"{args.max_model_gap:.0%}) -- every available leg's price disagreed with "
+                  f"the model by more than that. Pass --max-model-gap to change.")
+        else:
+            best_prop = max(plausible_prop_evals, key=lambda e: e.edge)
+            print(f"  {best_prop.leg.label}")
+            print(f"  odds {best_prop.leg.odds:.2f} ({to_american(best_prop.leg.odds)})  "
+                  f"model {best_prop.p_model:6.1%}  edge {best_prop.edge:+.1%}  EV {best_prop.ev:+.1%}")
+            log_rows.append({
+                "season": args.season, "week": args.week, "market": best_prop.leg.stat,
+                "subject": best_prop.leg.player, "selection": best_prop.leg.selection,
+                "line": best_prop.leg.line, "odds": best_prop.leg.odds,
+                "p_model": best_prop.p_model, "edge": best_prop.edge,
+            })
 
     if args.log and log_rows:
         tracking.log_picks(log_rows)
@@ -475,6 +499,9 @@ def main(argv=None):
     pl.add_argument("--min-edge", type=float, default=0.02)
     pl.add_argument("--candidates", type=int, default=12)
     pl.add_argument("--top", type=int, default=15)
+    pl.add_argument("--max-model-gap", type=float, default=DEFAULTS["max_model_gap"],
+                    help="exclude a leg if |model prob - book prob| exceeds this (thin/stale "
+                         "market or model blind spot sanity check); 1.0 disables it")
     pl.set_defaults(fn=cmd_parlay)
 
     bt = sub.add_parser("backtest", parents=[common], help="walk-forward evaluation vs. a naive baseline")
@@ -505,6 +532,8 @@ def main(argv=None):
     gb.add_argument("--min-edge", type=float, default=0.02)
     gb.add_argument("--candidates", type=int, default=12)
     gb.add_argument("--top", type=int, default=15)
+    gb.add_argument("--max-model-gap", type=float, default=DEFAULTS["max_model_gap"],
+                    help="exclude a leg if |model prob - book prob| exceeds this; 1.0 disables it")
     gb.set_defaults(fn=cmd_game_bets)
 
     gbt = sub.add_parser("game-backtest", parents=[common], help="walk-forward evaluation for margin and totals")
@@ -518,6 +547,8 @@ def main(argv=None):
     bb.add_argument("--no-feed-odds", action="store_true", help="ignore Kalshi's live prop feed")
     bb.add_argument("--market-weight", type=float, default=DEFAULTS["market_weight"])
     bb.add_argument("--log", action="store_true", help="append this week's pick(s) to data/picks_log.csv for grading later")
+    bb.add_argument("--max-model-gap", type=float, default=DEFAULTS["max_model_gap"],
+                    help="exclude a leg if |model prob - book prob| exceeds this; 1.0 disables it")
     bb.set_defaults(fn=cmd_best_bet)
 
     gd = sub.add_parser("grade", parents=[common],
