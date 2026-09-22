@@ -17,6 +17,9 @@ GAMES_URL = "https://github.com/nflverse/nflverse-data/releases/download/schedul
 ROSTER_URL = "https://github.com/nflverse/nflverse-data/releases/download/weekly_rosters/roster_weekly_{season}.csv"
 PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
 SNAP_COUNTS_URL = "https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_{season}.csv"
+PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.csv.gz"
+PBP_KEEP = ["game_id", "season", "week", "posteam", "defteam", "pass", "receiver_player_id",
+           "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass"]
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 STATS_KEEP = [
@@ -155,3 +158,58 @@ def join_snap_counts(snaps: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame
     """
     merged = snaps.merge(players, left_on="pfr_player_id", right_on="pfr_id", how="inner")
     return merged[["game_id", "player_id", "team", "offense_pct"]].reset_index(drop=True)
+
+
+def load_pbp(seasons: int = 3, refresh: bool = False, today: date | None = None) -> pd.DataFrame:
+    """Play-by-play rows, column-filtered to PBP_KEEP immediately on read (the raw file
+    has 372 columns; only pass-play receiving/pass-rate fields are needed here). Same
+    per-season download/cache/skip-missing-current-season pattern as load_player_stats().
+    """
+    cur = current_season_start(today)
+    frames = []
+    for season in range(cur - seasons + 1, cur + 1):
+        max_age = 6 if season == cur else 24 * 365 * 10
+        cache = DATA_DIR / f"play_by_play_{season}.csv.gz"
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            fresh = cache.exists() and (time.time() - cache.stat().st_mtime) < max_age * 3600
+            if refresh or not fresh:
+                req = urllib.request.Request(PBP_URL.format(season=season),
+                                             headers={"User-Agent": "nfl-props/0.1"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    cache.write_bytes(resp.read())
+            raw = pd.read_csv(cache, compression="gzip", encoding="utf-8-sig",
+                              low_memory=False, usecols=lambda c: c in PBP_KEEP)
+            frames.append(raw)
+        except urllib.error.HTTPError as e:
+            if season == cur and e.code == 404:
+                continue
+            raise
+    if not frames:
+        return pd.DataFrame(columns=PBP_KEEP)
+    return pd.concat(frames, ignore_index=True)
+
+
+def aggregate_pbp_receiving(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Per-player-game receiving aggregates from real targets only (pass plays with a
+    real receiver_player_id). A descriptive fact about a completed game, like the
+    existing targets/receiving_yards columns -- only safe to use through a trailing
+    transform over a player's own PRIOR games, never as a same-game predictor.
+    """
+    targets = pbp[(pbp["pass"] == 1) & pbp["receiver_player_id"].notna()]
+    g = targets.groupby(["game_id", "receiver_player_id"], as_index=False)
+    out = g.agg(targets_pbp=("receiver_player_id", "size"),
+               air_yards_pbp=("air_yards", "sum"),
+               epa_per_target=("epa", "mean"),
+               xyac_epa_per_target=("xyac_epa", "mean"))
+    return out.rename(columns={"receiver_player_id": "player_id"})
+
+
+def aggregate_pbp_team_pass_rate(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Per-team-game mean pass-rate-over-expected, over all pass plays (not just
+    completed/targeted ones) -- the team-level opportunity signal for how pass-heavy a
+    team's real play-calling was that game, independent of any single player's targets.
+    """
+    passes = pbp[pbp["pass"] == 1]
+    out = passes.groupby(["game_id", "posteam"], as_index=False)["pass_oe"].mean()
+    return out.rename(columns={"posteam": "team", "pass_oe": "pass_oe_game"})
