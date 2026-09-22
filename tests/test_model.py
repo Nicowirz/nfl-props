@@ -639,3 +639,29 @@ def test_predicted_distribution_stat_outside_wide_sigma_stats_unaffected():
     r = model.fit(df2, "rec_yds", reg=0.05, halflife_days=100_000, min_games=50)
     _, sigma = model.predicted_distribution(r, "LOW0", "QB", "T0", True, stat="rec_yds")
     assert sigma == pytest.approx(r.sigma["QB"])
+
+
+def test_add_trailing_snap_share_unaffected_by_future_rows():
+    """A prediction as of week 3 must be identical whether or not week-4/5 rows exist yet
+    in the input frame -- guards against the exact class of subtle leakage
+    add_trailing_share's own group-fallback docstring already flags as a risk.
+    """
+    through_week3 = pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.60},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-08"), "position_group": "WR", "offense_pct": 0.80},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-15"), "position_group": "WR", "offense_pct": 0.90},
+        {"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.10},
+    ])
+    with_future_rows = pd.concat([through_week3, pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-22"), "position_group": "WR", "offense_pct": 0.95},
+        {"player_id": "P3", "date": pd.Timestamp("2025-09-22"), "position_group": "WR", "offense_pct": 0.05},
+    ])], ignore_index=True)
+
+    out_now = model.add_trailing_snap_share(through_week3, halflife_days=180.0)
+    out_with_future = model.add_trailing_snap_share(with_future_rows, halflife_days=180.0)
+
+    for player_id, d in [("P1", "2025-09-15"), ("P2", "2025-09-01")]:
+        before = out_now[(out_now["player_id"] == player_id) & (out_now["date"] == pd.Timestamp(d))]
+        after = out_with_future[(out_with_future["player_id"] == player_id) & (out_with_future["date"] == pd.Timestamp(d))]
+        assert before.iloc[0]["trailing_snap_share"] == pytest.approx(after.iloc[0]["trailing_snap_share"]), \
+            f"{player_id}'s {d} trailing_snap_share changed when future rows were added -- leakage"
