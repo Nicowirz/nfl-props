@@ -71,3 +71,13 @@ def test_walk_forward_targets_share_branch_is_finite():
     s = rate_backtest.summarize(preds)
     assert np.isfinite(s["nll_model"])
     assert np.isfinite(s["nll_baseline"])
+
+
+def test_walk_forward_passes_through_extra_covariates():
+    df = _synthetic_multi_week()
+    df["cov_x"] = np.random.default_rng(0).normal(0, 1.0, len(df))
+    start = df["date"].iloc[len(df) // 2].date()
+    preds = rate_backtest.walk_forward(df, "targets", start, halflife_days=100_000, min_games=20,
+                                       extra_covariates=["cov_x"])
+    s = rate_backtest.summarize(preds)
+    assert np.isfinite(s["nll_model"])

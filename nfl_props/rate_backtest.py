@@ -18,7 +18,8 @@ EPS = 1e-6
 
 
 def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: float = 180.0,
-                 reg: float = 5.0, min_games: int = 200) -> pd.DataFrame:
+                 reg: float = 5.0, min_games: int = 200,
+                 extra_covariates: list[str] | None = None) -> pd.DataFrame:
     if stat in rate_model.SHARE_STATS and "game_id" in stats.columns:
         stats = model.add_trailing_share(stats, stat, halflife_days=halflife_days)
     relevant = stats[stats["position_group"].isin(rate_model.RELEVANT_POSITIONS[stat])].sort_values("date")
@@ -36,11 +37,14 @@ def walk_forward(stats: pd.DataFrame, stat: str, start: date, halflife_days: flo
             week_key = (g["season"], g["week"])
             if week_key != fit_week:
                 ratings = rate_model.fit_poisson(stats, stat, as_of=g["date"].date(),
-                                                 halflife_days=halflife_days, reg=reg, min_games=min_games)
+                                                 halflife_days=halflife_days, reg=reg, min_games=min_games,
+                                                 extra_covariates=extra_covariates)
                 fit_week = week_key
+            extra_values = {c: g.get(c) for c in (extra_covariates or [])}
             lam, disp = rate_model.predicted_rate(ratings, g["player_id"], g["position_group"],
                                                   g["opponent_team"], bool(g["home"]),
-                                                  trailing_share=g.get("trailing_share"))
+                                                  trailing_share=g.get("trailing_share"),
+                                                  extra_values=extra_values)
             prior = season_totals.get(g["player_id"], [])
             group_rate = float(np.exp(ratings.position_intercept.get(g["position_group"],
                                                                       ratings.intercept_fallback)))

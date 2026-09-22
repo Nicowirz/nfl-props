@@ -227,3 +227,81 @@ def test_fit_poisson_recovers_share_coef_for_targets():
     r = rate_model.fit_poisson(aug, "targets", reg=0.05, halflife_days=100_000, min_games=50)
     assert r.share_coef is not None
     assert abs(r.share_coef - true_share_coef) < 0.5
+
+
+def _synthetic_targets_with_extra_covariates(n_players=20, n_teams=8, games_per_player=16, seed=21,
+                                              true_coef_a=0.8, true_coef_b=-0.5):
+    """Like _synthetic_targets() but with two additional named covariates ("cov_a"/
+    "cov_b", standing in for snap_share/team_pass_volume) with KNOWN true sensitivities
+    baked into the generating model -- confirms fit_poisson can recover multiple
+    simultaneous extra covariates together, not just the existing single trailing_share
+    slot.
+    """
+    rng = np.random.default_rng(seed)
+    players = [f"P{i}" for i in range(n_players)]
+    teams = [f"T{i}" for i in range(n_teams)]
+    ability = dict(zip(players, rng.normal(0, 0.2, n_players)))
+    defense = dict(zip(teams, rng.normal(0, 0.15, n_teams)))
+    intercept, home_field = 1.6, 0.05
+    player_team = {p: rng.choice(teams) for p in players}
+    rows = []
+    d = pd.Timestamp("2024-09-01")
+    for p in players:
+        team = player_team[p]
+        opp_pool = [t for t in teams if t != team]
+        for _ in range(games_per_player):
+            opp = rng.choice(opp_pool)
+            home = bool(rng.integers(0, 2))
+            cov_a = float(rng.normal(0, 1.0))
+            cov_b = float(rng.normal(0, 1.0))
+            eta = (intercept + ability[p] + defense[opp] + (home_field if home else 0.0)
+                  + true_coef_a * cov_a + true_coef_b * cov_b)
+            targets = float(rng.poisson(np.exp(eta)))
+            rows.append({
+                "player_id": p, "player_name": p, "position_group": "WR", "team": team,
+                "opponent_team": opp, "date": d, "home": home,
+                "targets": targets, "receptions": 0.0, "cov_a": cov_a, "cov_b": cov_b,
+            })
+            d += pd.Timedelta(days=1)
+    return pd.DataFrame(rows), true_coef_a, true_coef_b
+
+
+def test_fit_poisson_recovers_multiple_extra_covariates():
+    df, true_coef_a, true_coef_b = _synthetic_targets_with_extra_covariates()
+    r = rate_model.fit_poisson(df, "targets", reg=0.05, halflife_days=100_000, min_games=50,
+                               extra_covariates=["cov_a", "cov_b"])
+    assert abs(r.extra_coefs["cov_a"] - true_coef_a) < 0.3
+    assert abs(r.extra_coefs["cov_b"] - true_coef_b) < 0.3
+
+
+def test_fit_poisson_extra_covariates_backward_compatible():
+    """Calling fit_poisson WITHOUT extra_covariates must be unaffected by this
+    generalization existing -- confirms the new parameter is purely additive.
+    """
+    df, players, teams, ability, defense, intercept, home_field = _synthetic_targets()
+    r = rate_model.fit_poisson(df, "targets", reg=0.05, halflife_days=100_000, min_games=50)
+    assert r.extra_coefs == {}
+    assert r.share_coef is None  # no trailing_share column present in this fixture
+
+
+def test_fit_poisson_raises_on_missing_extra_covariate_column():
+    df, *_ = _synthetic_targets_with_extra_covariates()
+    df = df.drop(columns=["cov_b"])
+    try:
+        rate_model.fit_poisson(df, "targets", min_games=50, extra_covariates=["cov_a", "cov_b"])
+        assert False, "expected ValueError for missing extra_covariates column"
+    except ValueError as e:
+        assert "cov_b" in str(e)
+
+
+def test_predicted_rate_applies_extra_covariate_coefficient():
+    df, true_coef_a, true_coef_b = _synthetic_targets_with_extra_covariates()
+    r = rate_model.fit_poisson(df, "targets", reg=0.05, halflife_days=100_000, min_games=50,
+                               extra_covariates=["cov_a", "cov_b"])
+    pid, opp = df["player_id"].iloc[0], df["opponent_team"].iloc[0]
+    lam_high, _ = rate_model.predicted_rate(r, pid, "WR", opp, True,
+                                            extra_values={"cov_a": 2.0, "cov_b": 0.0})
+    lam_low, _ = rate_model.predicted_rate(r, pid, "WR", opp, True,
+                                           extra_values={"cov_a": -2.0, "cov_b": 0.0})
+    # cov_a's true sensitivity is positive, so a higher cov_a value must predict more targets.
+    assert lam_high > lam_low

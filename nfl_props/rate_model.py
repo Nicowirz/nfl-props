@@ -59,6 +59,8 @@ class RateRatings:
     n_games: int
     game_counts: dict[str, int]
     prior_players: list[str] = field(default_factory=list)
+    extra_coefs: dict[str, float] = field(default_factory=dict)
+    extra_fallback: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def table(self) -> pd.DataFrame:
         rows = [{
@@ -72,7 +74,8 @@ class RateRatings:
 
 
 def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days: float = 180.0,
-               reg: float = 5.0, min_games: int = 200) -> RateRatings:
+               reg: float = 5.0, min_games: int = 200,
+               extra_covariates: list[str] | None = None) -> RateRatings:
     """Fit ratings on every game from a stat-relevant position, strictly before `as_of`
     (default: all rows) -- same "fit on all relevant games, not just qualifying ones"
     reasoning as model.fit() (see its docstring): restricting to qualifying games would
@@ -101,7 +104,12 @@ def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halfl
     w = 0.5 ** (days_ago / halflife_days)
 
     has_share = stat in SHARE_STATS and "trailing_share" in df.columns
-    n_extra = 1 if has_share else 0
+    extra_covariates = extra_covariates or []
+    missing = [c for c in extra_covariates if c not in df.columns]
+    if missing:
+        raise ValueError(f"extra_covariates column(s) not in stats: {missing}")
+    n_share_extra = 1 if has_share else 0
+    n_extra = n_share_extra + len(extra_covariates)
     X = np.zeros((n, n_g + 1 + n_p + n_t + n_extra))
     gi = df["position_group"].map(gidx).to_numpy()
     X[np.arange(n), gi] = 1.0
@@ -112,6 +120,9 @@ def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halfl
     X[np.arange(n), n_g + 1 + n_p + ti] = 1.0
     if has_share:
         X[:, n_g + 1 + n_p + n_t] = df["trailing_share"].to_numpy(dtype=float)
+    extra_start = n_g + 1 + n_p + n_t + n_share_extra
+    for i, col in enumerate(extra_covariates):
+        X[:, extra_start + i] = df[col].to_numpy(dtype=float)
 
     penalty = np.zeros(X.shape[1])
     penalty[:n_g] = model.GROUP_INTERCEPT_REG
@@ -146,6 +157,9 @@ def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halfl
     if has_share:
         share_fallback = {g: float(df.loc[df["position_group"] == g, "trailing_share"].mean())
                           for g in groups}
+    extra_coefs = {col: float(beta[extra_start + i]) for i, col in enumerate(extra_covariates)}
+    extra_fallback = {col: {g: float(df.loc[df["position_group"] == g, col].mean()) for g in groups}
+                      for col in extra_covariates}
     group_counts = df["position_group"].value_counts().to_dict()
     intercept_fallback = float(np.average([position_intercept[g] for g in groups],
                                           weights=[group_counts[g] for g in groups]))
@@ -172,6 +186,7 @@ def fit_poisson(stats: pd.DataFrame, stat: str, as_of: date | None = None, halfl
         share_coef=share_coef, share_fallback=share_fallback,
         home_field=home_field, dispersion=dispersion, dispersion_global=dispersion_global,
         as_of=as_of, n_games=n, game_counts=game_counts,
+        extra_coefs=extra_coefs, extra_fallback=extra_fallback,
     )
 
 
@@ -188,7 +203,8 @@ def nb_params(lam: float | np.ndarray, dispersion: float | np.ndarray) -> tuple:
 
 
 def predicted_rate(r: RateRatings, player_id: str, position_group: str, opponent_team: str,
-                   home: bool, trailing_share: float | None = None) -> tuple[float, float]:
+                   home: bool, trailing_share: float | None = None,
+                   extra_values: dict[str, float] | None = None) -> tuple[float, float]:
     """(lambda, dispersion): lambda is the expected count (Poisson mean); dispersion is
     the quasi-Poisson variance-inflation factor (Var = dispersion * lambda), always >= 1.
     Same unknown-player/unknown-group fallback treatment as model.predicted_distribution().
@@ -205,6 +221,12 @@ def predicted_rate(r: RateRatings, player_id: str, position_group: str, opponent
         effective_share = (trailing_share if trailing_share is not None
                            else r.share_fallback.get(position_group, 0.0))
         eta += r.share_coef * effective_share
+    extra_values = extra_values or {}
+    for col, coef in r.extra_coefs.items():
+        value = extra_values.get(col)
+        if value is None:
+            value = r.extra_fallback.get(col, {}).get(position_group, 0.0)
+        eta += coef * value
     lam = float(np.exp(np.clip(eta, -20, 20)))
     disp = r.dispersion.get(position_group, r.dispersion_global)
     return lam, disp
