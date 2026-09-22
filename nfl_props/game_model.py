@@ -220,3 +220,93 @@ def predicted_total(r: ScoreRatings, home_team: str, away_team: str) -> tuple[fl
     mu = home_mu + away_mu
     sigma = float(np.sqrt(home_sigma ** 2 + away_sigma ** 2))
     return mu, sigma
+
+
+PASS_VOLUME_REG = 3.0
+MIN_PASS_VOLUME_GAMES = 100
+
+
+@dataclass
+class PassVolumeRatings:
+    teams: list[str]
+    tendency: dict[str, float]
+    intercept: float
+    home_field: float
+    sigma: float
+    as_of: date
+    n_games: int
+    game_counts: dict[str, int]
+    prior_teams: list[str] = field(default_factory=list)
+
+    def table(self) -> pd.DataFrame:
+        rows = [{
+            "team": t, "tendency": self.tendency[t], "games": self.game_counts.get(t, 0),
+            "low_sample": self.game_counts.get(t, 0) < NEW_TEAM_GAMES,
+        } for t in self.teams]
+        return pd.DataFrame(rows).sort_values("tendency", ascending=False).reset_index(drop=True)
+
+
+def fit_pass_volume(games: pd.DataFrame, team_pass_rate: pd.DataFrame, as_of: date | None = None,
+                    halflife_days: float = 365.0, reg: float = PASS_VOLUME_REG,
+                    min_games: int = MIN_PASS_VOLUME_GAMES) -> PassVolumeRatings:
+    """Fit each team's recency-weighted typical pass-rate-over-expected (pass_oe), from
+    play-by-play-derived per-team-game aggregates (data.aggregate_pbp_team_pass_rate()).
+    One rating per team -- unlike fit_score's scoring/allowed split, pass_oe is already a
+    team's own play-calling tendency in a single number, not a two-sided quantity the way
+    points scored/allowed are.
+    """
+    sched = games[["game_id", "gameday", "home_team", "away_team", "neutral"]].dropna(subset=["gameday"])
+    df = team_pass_rate.merge(sched, on="game_id", how="inner")
+    df["home"] = (df["team"] == df["home_team"]) & (~df["neutral"])
+    if as_of is not None:
+        df = df[df["gameday"] < pd.Timestamp(as_of)]
+    if len(df) < min_games:
+        raise ValueError(f"need at least {min_games} team-games to fit pass volume, have {len(df)}")
+    as_of = as_of or df["gameday"].max().date()
+
+    teams = sorted(df["team"].unique())
+    tidx = {t: i for i, t in enumerate(teams)}
+    n_t, n = len(teams), len(df)
+
+    y = df["pass_oe_game"].to_numpy(dtype=float)
+    days_ago = (pd.Timestamp(as_of) - df["gameday"]).dt.days.to_numpy(dtype=float)
+    w = 0.5 ** (days_ago / halflife_days)
+
+    # design matrix columns: [intercept, home, tendency(n_t): one-hot on the row's own team]
+    X = np.zeros((n, 2 + n_t))
+    X[:, 0] = 1.0
+    X[:, 1] = df["home"].to_numpy(dtype=float)
+    ti = df["team"].map(tidx).to_numpy()
+    X[np.arange(n), 2 + ti] = 1.0
+
+    penalty = np.zeros(X.shape[1])
+    penalty[1] = HOME_FIELD_REG
+    penalty[2:] = reg
+    XtWX = X.T @ (X * w[:, None])
+    XtWy = X.T @ (y * w)
+    b = np.linalg.solve(XtWX + np.diag(penalty), XtWy)
+
+    intercept, home_field = float(b[0]), float(b[1])
+    tendency = {t: float(b[2 + i]) for t, i in tidx.items()}
+
+    resid = y - X @ b
+    sigma = float(np.sqrt(np.average(resid ** 2, weights=w)))
+    game_counts = df["team"].value_counts().to_dict()
+
+    return PassVolumeRatings(teams=teams, tendency=tendency, intercept=intercept,
+                             home_field=home_field, sigma=sigma, as_of=as_of, n_games=n,
+                             game_counts=game_counts)
+
+
+def predicted_pass_volume(r: PassVolumeRatings, team: str, home: bool) -> tuple[float, float]:
+    """(mu, sigma) of `team`'s pass_oe for a game, given whether they're at home. Unknown
+    teams get tendency 0.0 (league average) and are flagged in `r.prior_teams`, same
+    treatment fit_margin/fit_score already give an unfitted team.
+    """
+    tendency = r.tendency.get(team)
+    if tendency is None:
+        tendency = 0.0
+        if team not in r.prior_teams:
+            r.prior_teams.append(team)
+    mu = r.intercept + (r.home_field if home else 0.0) + tendency
+    return mu, r.sigma

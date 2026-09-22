@@ -144,3 +144,72 @@ def test_predicted_score_unknown_team_flagged():
     mu, sigma = game_model.predicted_score(r, "NEWTEAM", teams[0])
     assert np.isfinite(mu) and sigma > 0
     assert "NEWTEAM" in r.prior_teams
+
+
+def _synthetic_pass_volume(n_teams=16, rounds=6, seed=0):
+    """Simulate team-game pass_oe observations from a known per-team tendency and a known
+    home-field edge -- one row per team-per-game (long format), mirroring how
+    data.aggregate_pbp_team_pass_rate()'s real output is shaped. Returns a synthetic
+    `games` frame (schedule) and a synthetic `team_pass_rate` frame (the aggregate),
+    matching fit_pass_volume()'s two real inputs.
+    """
+    rng = np.random.default_rng(seed)
+    teams = [f"T{i}" for i in range(n_teams)]
+    tendency = dict(zip(teams, rng.normal(0, 4.0, n_teams)))
+    intercept, home_field, sigma = 0.5, 2.0, 6.0
+    games_rows = []
+    rate_rows = []
+    d = pd.Timestamp("2024-09-01")
+    for _ in range(rounds):
+        order = list(rng.permutation(teams))
+        for i in range(0, n_teams - 1, 2):
+            home, away = order[i], order[i + 1]
+            game_id = f"g{len(games_rows)}"
+            games_rows.append({
+                "game_id": game_id, "season": 2024, "game_type": "REG", "week": 1,
+                "gameday": d, "home_team": home, "away_team": away, "neutral": False,
+            })
+            home_pass_oe = rng.normal(intercept + home_field + tendency[home], sigma)
+            away_pass_oe = rng.normal(intercept + tendency[away], sigma)
+            rate_rows.append({"game_id": game_id, "team": home, "pass_oe_game": home_pass_oe})
+            rate_rows.append({"game_id": game_id, "team": away, "pass_oe_game": away_pass_oe})
+            d += pd.Timedelta(days=1)
+    return (pd.DataFrame(games_rows), pd.DataFrame(rate_rows), teams, tendency,
+           intercept, home_field, sigma)
+
+
+def test_fit_pass_volume_recovers_tendency_and_home_field():
+    games, team_pass_rate, teams, tendency, intercept, home_field, sigma = \
+        _synthetic_pass_volume(rounds=60, seed=0)
+    r = game_model.fit_pass_volume(games, team_pass_rate, reg=0.05, halflife_days=100_000, min_games=20)
+    est_tendency = np.array([r.tendency[t] for t in teams])
+    true_tendency = np.array([tendency[t] for t in teams])
+    assert np.corrcoef(true_tendency, est_tendency)[0, 1] > 0.85
+    assert abs(r.home_field - home_field) < 1.5
+
+
+def test_fit_pass_volume_respects_as_of():
+    games, team_pass_rate, *_ = _synthetic_pass_volume(rounds=8, seed=1)
+    cutoff = games["gameday"].iloc[40].date()
+    r = game_model.fit_pass_volume(games, team_pass_rate, as_of=cutoff, min_games=20)
+    expected_n = len(team_pass_rate.merge(
+        games[["game_id", "gameday"]], on="game_id")[lambda d: d["gameday"] < pd.Timestamp(cutoff)])
+    assert r.n_games == expected_n
+    assert r.as_of == cutoff
+
+
+def test_predicted_pass_volume_unknown_team_flagged():
+    games, team_pass_rate, teams, *_ = _synthetic_pass_volume(rounds=8, seed=2)
+    r = game_model.fit_pass_volume(games, team_pass_rate, reg=0.1, min_games=20)
+    mu, sigma = game_model.predicted_pass_volume(r, "NEWTEAM", home=True)
+    assert np.isfinite(mu) and sigma > 0
+    assert "NEWTEAM" in r.prior_teams
+
+
+def test_predicted_pass_volume_home_minus_away_equals_home_field():
+    games, team_pass_rate, teams, tendency, intercept, home_field, sigma = \
+        _synthetic_pass_volume(rounds=60, seed=0)
+    r = game_model.fit_pass_volume(games, team_pass_rate, reg=0.05, halflife_days=100_000, min_games=20)
+    mu_home, _ = game_model.predicted_pass_volume(r, teams[0], home=True)
+    mu_away, _ = game_model.predicted_pass_volume(r, teams[0], home=False)
+    assert mu_home - mu_away == pytest.approx(r.home_field)
