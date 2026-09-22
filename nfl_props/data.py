@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import model
+
 STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 GAMES_URL = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
 ROSTER_URL = "https://github.com/nflverse/nflverse-data/releases/download/weekly_rosters/roster_weekly_{season}.csv"
@@ -260,3 +262,26 @@ def load_ngs_receiving(seasons: int = 3, refresh: bool = False, today: date | No
         return pd.DataFrame(columns=["player_id"] + NGS_RECEIVING_KEEP[1:])
     df = pd.concat(frames, ignore_index=True)
     return df.rename(columns={"player_gsis_id": "player_id"})
+
+
+def stats_with_trailing_snap_share(stats: pd.DataFrame, seasons: int = 3, refresh: bool = False,
+                                   today: date | None = None, halflife_days: float = 180.0) -> pd.DataFrame:
+    """Augment `stats` with a leakage-safe `trailing_snap_share` column: fetch snap_counts
+    and the player-ID crosswalk, join them (pfr_id -> gsis_id player_id), merge the result
+    onto `stats` by (game_id, player_id), then compute the trailing (recency-weighted,
+    strictly-prior-games) average via model.add_trailing_snap_share().
+
+    Only `offense_pct` is kept from the join (not `team`) -- join_snap_counts()'s own
+    `team` column would collide (`team_x`/`team_y`) with `stats`' own `team` column on
+    this merge otherwise. Rows with no snap-count match (crosswalk gap, or a season/week
+    snap_counts doesn't cover) get `offense_pct` filled at 0.0 before computing trailing
+    share -- treated as "no recorded snaps that game" rather than dropped, so this never
+    shrinks the row count of `stats`.
+    """
+    snaps = load_snap_counts(seasons=seasons, refresh=refresh, today=today)
+    players = load_players(refresh=refresh)
+    joined = join_snap_counts(snaps, players)
+    merged = stats.merge(joined[["game_id", "player_id", "offense_pct"]],
+                         on=["game_id", "player_id"], how="left")
+    merged["offense_pct"] = merged["offense_pct"].fillna(0.0)
+    return model.add_trailing_snap_share(merged, halflife_days=halflife_days)

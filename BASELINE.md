@@ -126,6 +126,30 @@ print(rate_backtest.calibration(df))
 "
 ```
 
+### snap_share ablation
+
+**Commit:** `3236255` (master, run 2026-09-22). **Method:** same
+`rate_backtest.walk_forward()` setup as above, compared with vs. without
+`trailing_snap_share` (from `data.stats_with_trailing_snap_share()`) as an
+`extra_covariates` column, per `docs/superpowers/plans/2026-09-22-nfl-props-opportunity-model-snap-share.md`.
+
+| Run | NLL model | NLL baseline |
+|---|---|---|
+| Base (trailing target-share only) | 1.699028790877028 | 1.841225562020044 |
+| + snap_share | 1.6892137371486382 | 1.901954381214095 |
+
+**Read honestly:** Adding `trailing_snap_share` as an extra covariate improved NLL model
+from 1.699029 to 1.689214 -- a real but small gain of ~0.00982 nats (~0.6% relative
+improvement). That is a much smaller effect than the usage-share covariate's validated
+gains on `rec_yds`/`rush_yds` (3.3%/10.6%, see README's "Usage-share covariate" section)
+and is in the same rough magnitude as noise from one backtest run (single walk-forward
+window, no significance test performed here). It is a real, directionally positive
+result, not a failure like `--pace-adjust`'s -- but on its own it is too marginal to
+justify making `trailing_snap_share` a default covariate for the `targets` model without
+further validation (e.g. across a longer window, or with a significance check) first.
+This ablation result alone does not ship anything live -- no CLI command reads either of
+these covariate configurations yet.
+
 ## Reproducing this baseline
 
 ```bash
