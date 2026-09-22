@@ -44,44 +44,35 @@ SHARE_STATS = {"rec_yds", "rush_yds"}  # stats with a real usage-share covariate
                                        # (targets for rec_yds, carries for rush_yds) --
                                        # pass_yds has no analog and is deliberately absent.
 
-# Validated against real 3-season data, 2026-09-16, 1-year backtest lookback, n=693 both
-# arms (a true apples-to-apples comparison: WIDE_SIGMA_STATS temporarily disabled
-# in-process to get a WITHOUT baseline on the identical data window, since a stale
-# README snapshot at a different n is not a valid comparison). GATE FAILED:
-#   NLL              1.3020 -> 1.2374  (~5% better -- criterion 1 PASSES)
-#   top-decile bucket  2.89% -> 2.45%  (moved AWAY from the 10% target -- criterion 2 FAILS)
-# Root cause: sigma_low_sample["QB"] came back 65% wider than the normal sigma["QB"]
-# (1.3249 vs 0.7998 in one snapshot fit), affecting 29% of QBs (24/83) in that fit --
-# a large, broadly-applied effect, not a narrow one targeting only genuine blowout
-# games. A materially wider sigma compresses PIT values toward 0.5 for every low-sample
-# prediction, which shrinks the already-too-small top-decile bucket further even as it
-# improves average NLL (dominated by the bulk of ordinary predictions) and shrinks the
-# already-too-large bottom bucket. The top-decile gap itself was a 3-prediction
-# difference (17 vs. 20 of 693), on a data window whose baseline top-decile rate
-# (~2.5-2.9%) was already far below the ~6.6% baseline the original low-sample-blowout
-# diagnostic was built against -- so the gate result is real (criterion 2 genuinely
-# failed on this window) but should be read as "this specific window/mechanism
-# combination didn't resolve it," not as strong evidence the underlying diagnostic
-# (backup QBs having underestimated blowout games) was wrong. A narrower mechanism
-# (capped widening, a heavier-tailed distribution instead of a wider normal one, or
-# triggering only on a documented role change) is a real candidate follow-up, out of
-# this plan's scope.
+# First validated 2026-09-16 (see git history for that run's full writeup): GATE FAILED
+# due to a real bug -- `sigma` (the "normal" pool) was computed from EVERY row of the
+# position group, including the low-sample rows `sigma_low_sample` also drew from, so
+# the two pools overlapped instead of partitioning cleanly. Fixed 2026-09-17 by adding
+# `sigma_normal_only` (the clean complement) alongside the pre-existing `sigma` --
+# `sigma` itself is left untouched (still every row, unconditionally) so every default,
+# non-wide-sigma caller (predict, parlay, best-bet, plain `backtest`) is provably
+# unaffected; only `backtest --wide-sigma` and (per this fix's gate result below) the
+# now-live default pass_yds prediction path read `sigma_normal_only`/`sigma_low_sample`.
 #
-# Per the plan's explicit gate, this stays inert by DEFAULT everywhere -- predict,
-# parlay, best-bet never pass `stat` into predicted_distribution(), and backtest.py's
-# walk_forward() only does so when called with wide_sigma=True (cli.py's `backtest
-# --wide-sigma` flag; off by default). This mechanism is tested, working,
-# currently-inert infrastructure (like pace.py's own rejected feature), gated behind a
-# diagnostic-only flag for anyone who wants to re-run the validation later -- not wired
-# into any live command's default behavior.
+# Re-validated against real 3-season data, 2026-09-17, 1-year backtest lookback, n=693
+# both arms (true apples-to-apples: the default `backtest` run and `backtest
+# --wide-sigma` share the identical data window and now differ ONLY in whether
+# predicted_distribution() is passed `stat=`). GATE PASSED:
+#   NLL                1.3020 -> 1.2396  (~4.8% better -- criterion 1 PASSES)
+#   top-decile bucket  2.89% -> 3.61%  (moved TOWARD the 10% target -- criterion 2 PASSES)
+# Caveat, stated plainly: with n=693, the top-decile bucket's 5-prediction shift (20->25)
+# is close to one standard error (~0.65 percentage points) -- the NLL improvement is
+# solid, but the calibration improvement, while correctly directional, is statistically
+# thin on this specific window. It is also still far from a FULL resolution: 3.61% is
+# well below both the 10% target and the ~6.6% baseline the original backup-QB-blowout
+# diagnostic was built against (a different data window). The final review's own broader
+# concern (this widens sigma for ALL low-sample QBs, not surgically for just genuine
+# blowout cases) likely still applies to some degree even after this fix -- a narrower
+# mechanism remains a real candidate follow-up, out of this round's scope.
 WIDE_SIGMA_STATS = {"pass_yds"}  # stats where a low-sample player's sigma is widened,
                                  # measured from real low-sample residuals -- rec_yds/
                                  # rush_yds already calibrate correctly at the top decile
                                  # (confirmed live 2026-09-16) and are deliberately absent.
-                                 # NOTE: as calibrated, this does not currently improve
-                                 # top-decile calibration (see comment above) and is only
-                                 # ever activated via `backtest --wide-sigma` -- see the
-                                 # gate result.
 
 OFFSET = 10.0             # log(yards + OFFSET) stays finite even for a slightly negative rushing game
 NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-sample in output
@@ -208,6 +199,11 @@ class Ratings:
     sigma: dict[str, float]
     sigma_global: float
     sigma_low_sample: dict[str, float]  # per position group, for WIDE_SIGMA_STATS only; {} otherwise
+    sigma_normal_only: dict[str, float]  # `sigma` with low-sample rows excluded; only consulted when
+                                         # a caller explicitly requests wide-sigma behavior via
+                                         # predicted_distribution(stat=...) -- `sigma` itself is left
+                                         # untouched so every default (non-wide-sigma) caller, including
+                                         # live predict/parlay/best-bet, is provably unaffected.
     as_of: date
     n_games: int
     game_counts: dict[str, int]
@@ -309,21 +305,41 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
     resid = y - X @ b
     sigma_global = float(np.sqrt(np.average(resid ** 2, weights=w)))
     group = df["position_group"].to_numpy()
+    game_counts = df["player_id"].value_counts().to_dict()
+
+    # sigma is computed exactly as it always has been -- EVERY row of the group,
+    # regardless of sample size -- and stays that way unconditionally. This is the
+    # value every default (non-wide-sigma) caller reads, including live predict/parlay/
+    # best-bet, so it must never depend on WIDE_SIGMA_STATS membership.
     sigma: dict[str, float] = {}
     for g in np.unique(group):
         mask = group == g
         if mask.sum() >= MIN_GROUP_RESIDUALS:
             sigma[g] = float(np.sqrt(np.average(resid[mask] ** 2, weights=w[mask])))
 
-    game_counts = df["player_id"].value_counts().to_dict()
-
+    # sigma_low_sample / sigma_normal_only are a clean partition of the SAME residuals,
+    # computed ADDITIONALLY (not as a replacement for `sigma` above) and consulted only
+    # when a caller explicitly opts in via predicted_distribution(stat=...). This is
+    # what fixes the original contamination bug (sigma_normal_only excludes low-sample
+    # rows that `sigma` itself still includes) without changing `sigma`'s own value or
+    # any default-caller behavior -- see docs/superpowers/specs/2026-09-16-nfl-props-
+    # low-sample-sigma-design.md's Architecture section, which described this exact
+    # partition; the original implementation mistakenly overloaded `sigma` itself for
+    # it instead of keeping the two separate.
     sigma_low_sample: dict[str, float] = {}
+    sigma_normal_only: dict[str, float] = {}
     if stat in WIDE_SIGMA_STATS:
         is_low_sample = df["player_id"].map(game_counts).to_numpy() < NEW_PLAYER_GAMES
+        for g in np.unique(group):
+            mask = (group == g) & ~is_low_sample
+            if mask.sum() >= MIN_GROUP_RESIDUALS:
+                sigma_normal_only[g] = float(np.sqrt(np.average(resid[mask] ** 2, weights=w[mask])))
         for g in np.unique(group):
             mask = (group == g) & is_low_sample
             if mask.sum() >= MIN_GROUP_RESIDUALS:
                 sigma_low_sample[g] = float(np.sqrt(np.average(resid[mask] ** 2, weights=w[mask])))
+            elif g in sigma_normal_only:
+                sigma_low_sample[g] = sigma_normal_only[g]
             elif g in sigma:
                 sigma_low_sample[g] = sigma[g]
             else:
@@ -338,7 +354,7 @@ def fit(stats: pd.DataFrame, stat: str, as_of: date | None = None, halflife_days
         position_intercept=position_intercept, intercept_fallback=intercept_fallback,
         share_coef=share_coef, share_fallback=share_fallback,
         home_field=home_field, sigma=sigma, sigma_global=sigma_global,
-        sigma_low_sample=sigma_low_sample, as_of=as_of,
+        sigma_low_sample=sigma_low_sample, sigma_normal_only=sigma_normal_only, as_of=as_of,
         n_games=n, game_counts=game_counts,
     )
 
@@ -359,11 +375,14 @@ def predicted_distribution(r: Ratings, player_id: str, position_group: str, oppo
     -- the same "assume average when we don't know" treatment ability already gets for
     an unknown player.
 
-    `stat` selects a widened `sigma_low_sample` for a low-sample player (fewer than
-    NEW_PLAYER_GAMES games at fit time, including an entirely unknown player) when
-    `stat in WIDE_SIGMA_STATS` -- omitting `stat` (the default, "") never matches
-    WIDE_SIGMA_STATS, reproducing the exact sigma this function always returned before
-    this parameter existed.
+    `stat` opts into WIDE_SIGMA_STATS' low-sample-aware sigma when `stat in
+    WIDE_SIGMA_STATS`: a low-sample player (fewer than NEW_PLAYER_GAMES games at fit
+    time, including an entirely unknown player) gets `sigma_low_sample`; a normal-sample
+    player gets `sigma_normal_only` (the contamination-free complement). Omitting `stat`
+    (the default, "") always falls through to `r.sigma` regardless of sample size --
+    reproducing the exact value this function always returned before this parameter
+    existed, so every default caller (predict/parlay/best-bet, and backtest without
+    --wide-sigma) is unaffected by WIDE_SIGMA_STATS entirely.
     """
     ability = r.ability.get(player_id)
     if ability is None:
@@ -377,8 +396,11 @@ def predicted_distribution(r: Ratings, player_id: str, position_group: str, oppo
         effective_share = (trailing_share if trailing_share is not None
                            else r.share_fallback.get(position_group, 0.0))
         mu += r.share_coef * effective_share
-    if stat in WIDE_SIGMA_STATS and r.game_counts.get(player_id, 0) < NEW_PLAYER_GAMES:
-        sigma = r.sigma_low_sample.get(position_group, r.sigma.get(position_group, r.sigma_global))
+    if stat in WIDE_SIGMA_STATS:
+        if r.game_counts.get(player_id, 0) < NEW_PLAYER_GAMES:
+            sigma = r.sigma_low_sample.get(position_group, r.sigma.get(position_group, r.sigma_global))
+        else:
+            sigma = r.sigma_normal_only.get(position_group, r.sigma.get(position_group, r.sigma_global))
     else:
         sigma = r.sigma.get(position_group, r.sigma_global)
     return mu, sigma

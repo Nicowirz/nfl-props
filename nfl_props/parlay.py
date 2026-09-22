@@ -105,10 +105,27 @@ def evaluate_legs(legs: Iterable[Leg], mu_sigma: dict[tuple[str, str], tuple[flo
     return out
 
 
+def model_book_gap(le) -> float:
+    """|model probability - book-implied probability| for one evaluated leg (LegEval or
+    GameLegEval -- both expose p_model, p_book, and the `implied` property).
+
+    Uses the devigged book probability when both sides were priced (the more reliable
+    read on what the market actually thinks); falls back to the raw single-side implied
+    probability (1/odds) otherwise. A large gap here is much more often a stale/thin
+    price or a model blind spot (see README's known limitations) than genuine insight,
+    so build_parlays/build_game_parlays and cmd_best_bet use it to exclude implausible
+    legs rather than let them dominate purely on raw edge.
+    """
+    reference = le.p_book if le.p_book is not None else le.implied
+    return abs(le.p_model - reference)
+
+
 def build_parlays(evals: list[LegEval], min_legs: int = 2, max_legs: int = 4,
-                  max_candidates: int = 12, min_edge: float = 0.0, top: int = 20) -> list[Parlay]:
+                  max_candidates: int = 12, min_edge: float = 0.0, top: int = 20,
+                  max_model_gap: float = 0.30) -> list[Parlay]:
     """Enumerate parlays from the best-edge legs and rank them by expected value."""
-    cands = sorted((le for le in evals if le.edge > min_edge), key=lambda le: -le.edge)
+    cands = sorted((le for le in evals if le.edge > min_edge and model_book_gap(le) <= max_model_gap),
+                   key=lambda le: -le.edge)
     cands = cands[:max_candidates]
     parlays: list[Parlay] = []
     for k in range(min_legs, max_legs + 1):
@@ -294,9 +311,11 @@ def evaluate_game_legs(legs: Iterable[GameLeg],
 
 
 def build_game_parlays(evals: list[GameLegEval], min_legs: int = 2, max_legs: int = 4,
-                       max_candidates: int = 12, min_edge: float = 0.0, top: int = 20) -> list[GameParlay]:
+                       max_candidates: int = 12, min_edge: float = 0.0, top: int = 20,
+                       max_model_gap: float = 0.30) -> list[GameParlay]:
     """Enumerate parlays from the best-edge legs and rank them by expected value."""
-    cands = sorted((le for le in evals if le.edge > min_edge), key=lambda le: -le.edge)
+    cands = sorted((le for le in evals if le.edge > min_edge and model_book_gap(le) <= max_model_gap),
+                   key=lambda le: -le.edge)
     cands = cands[:max_candidates]
     parlays: list[GameParlay] = []
     for k in range(min_legs, max_legs + 1):

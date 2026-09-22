@@ -1,7 +1,7 @@
 import pytest
 
 from nfl_props.markets import prob_over
-from nfl_props.parlay import Leg, build_parlays, evaluate_legs, legs_from_csv
+from nfl_props.parlay import Leg, build_parlays, evaluate_legs, legs_from_csv, model_book_gap
 
 
 def _mu_sigma():
@@ -72,7 +72,10 @@ def test_build_parlays_ranks_by_ev():
             Leg("CMC", "rush_yds", "over", 40.0, 2.2)]
     mu_sigma = {("Josh Allen", "pass_yds"): (5.6, 0.3), ("CMC", "rush_yds"): (4.5, 0.35)}
     evals = evaluate_legs(legs, mu_sigma, market_weight=0.0)
-    parlays = build_parlays(evals, min_legs=2, max_legs=2, min_edge=-1.0)
+    # max_model_gap=1.0: this test's synthetic odds produce a large pure-model edge on
+    # purpose (to get a clean, unambiguous ranking signal); the plausibility filter is
+    # exercised separately in test_build_parlays_excludes_implausible_model_book_disagreement.
+    parlays = build_parlays(evals, min_legs=2, max_legs=2, min_edge=-1.0, max_model_gap=1.0)
     assert len(parlays) == 1
     assert parlays[0].ev == pytest.approx(parlays[0].prob * parlays[0].odds - 1)
     assert parlays[0].kelly >= 0
@@ -97,3 +100,50 @@ def test_legs_from_csv_rejects_unknown_stat(tmp_path):
     p.write_text("player,stat,line,over_odds,under_odds\nX,touchdowns,1.5,-110,-110\n")
     with pytest.raises(ValueError):
         legs_from_csv(str(p))
+
+
+def test_model_book_gap_uses_devigged_book_prob_when_available():
+    legs = [
+        Leg("Josh Allen", "pass_yds", "over", 250.0, 2.0),
+        Leg("Josh Allen", "pass_yds", "under", 250.0, 2.0),
+    ]
+    # mu/sigma chosen so the model thinks "over" is far more likely than the devigged
+    # 50/50 book price implies.
+    evals = evaluate_legs(legs, {("Josh Allen", "pass_yds"): (6.5, 0.3)}, market_weight=0.0)
+    over_eval = next(e for e in evals if e.leg.selection == "over")
+    assert over_eval.p_book is not None
+    assert model_book_gap(over_eval) == pytest.approx(abs(over_eval.p_model - over_eval.p_book))
+
+
+def test_model_book_gap_falls_back_to_raw_implied_when_no_devig():
+    legs = [Leg("Josh Allen", "pass_yds", "over", 250.0, 1.91)]
+    evals = evaluate_legs(legs, {("Josh Allen", "pass_yds"): (5.55, 0.30)}, market_weight=0.0)
+    e = evals[0]
+    assert e.p_book is None
+    assert model_book_gap(e) == pytest.approx(abs(e.p_model - e.implied))
+
+
+def test_build_parlays_excludes_implausible_model_book_disagreement():
+    # Leg A: model and (devigged) book roughly agree -- a normal, trustworthy edge.
+    # Leg B: model thinks "over" is far likelier than the book's devigged price implies --
+    # a >30pp disagreement, the kind a thin/stale market or a model blind spot produces,
+    # not genuine insight -- and must not be allowed to win purely on raw edge.
+    legs = [
+        Leg("CMC", "rush_yds", "over", 80.0, 1.87),
+        Leg("CMC", "rush_yds", "under", 80.0, 1.95),
+        Leg("Suspect Player", "pass_yds", "over", 150.0, 1.87),
+        Leg("Suspect Player", "pass_yds", "under", 150.0, 1.95),
+    ]
+    mu_sigma = {
+        ("CMC", "rush_yds"): (4.5, 0.35),        # model ~= book here
+        ("Suspect Player", "pass_yds"): (6.5, 0.3),  # model way above the devigged book price
+    }
+    evals = evaluate_legs(legs, mu_sigma, market_weight=0.0)
+    suspect = next(e for e in evals if e.leg.player == "Suspect Player" and e.leg.selection == "over")
+    normal = next(e for e in evals if e.leg.player == "CMC" and e.leg.selection == "over")
+    assert model_book_gap(suspect) > 0.30
+    assert suspect.edge > normal.edge  # the implausible leg looks "better" on raw edge alone
+
+    parlays = build_parlays(evals, min_legs=2, max_legs=2, min_edge=-1.0, max_model_gap=0.30)
+    for pl in parlays:
+        assert all(le.leg.player != "Suspect Player" for le in pl.legs)

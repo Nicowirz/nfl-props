@@ -30,7 +30,7 @@ All commands: `.venv\Scripts\python -m nfl_props <command>`.
 | `update` | force re-download of stats, schedules, rosters |
 | `ratings` | player ability + opponent defense ratings per stat category |
 | `predict --week N` | projected yardage distribution for that week's matchups |
-| `parlay [--odds file.csv]` | rank legs by edge against live Kalshi prices (no file needed to start), build ranked parlays; `--odds` overrides/supplements the feed, `--no-feed-odds` disables it |
+| `parlay [--odds file.csv] [--max-model-gap G]` | rank legs by edge against live Kalshi prices (no file needed to start), build ranked parlays; `--odds` overrides/supplements the feed, `--no-feed-odds` disables it, `--max-model-gap` tunes the plausibility filter below (default `0.30`) |
 | `backtest [--pace-adjust]` | walk-forward evaluation: log-likelihood and calibration vs. a naive baseline; `--pace-adjust` applies a calibrated adjustment to player predictions based on the game's predicted scoring total, for comparison against the unadjusted model -- see "What the backtest says" below, as calibrated it does not improve NLL and is not applied anywhere else |
 | `fantasy-predict --week N` | PPR fantasy-point projections for that week (BETA); `--compare "A,B"` prints a start/sit confidence percentage between two players -- see "Fantasy points (PPR)" below |
 | `fantasy-backtest` | walk-forward evaluation for the four reception/touchdown rate models (receptions, pass_td, rush_td, rec_td); refits an IRLS Poisson model for each stat, week by week, so it can take several minutes -- run it in the foreground |
@@ -58,7 +58,29 @@ need no API key; this project only ever reads prices, it never places an order.
   player/stat/line and adds anything the feed doesn't have.
 - Real-time only -- not wired into `backtest`, which needs historical closing lines.
 - Some Kalshi contracts are thin (wide bid/ask spreads on far-out-of-the-money lines);
-  treat those edges with extra skepticism, the tool doesn't filter them out.
+  see the plausibility filter below for how those are handled.
+
+### Model/book plausibility filter (`--max-model-gap`, default `0.30`) -- applied by default
+
+`parlay`, `game-bets`, and `best-bet` exclude any leg where the model's probability and the
+devigged book probability (or the raw single-side implied probability, when only one side
+of a line is priced) disagree by more than `--max-model-gap` (30 percentage points by
+default). A gap that large is far more often a stale/thin Kalshi contract or a model blind
+spot (see "Known limitations" below -- no starter/depth-chart awareness, no
+injury/inactive-list awareness) than genuine edge, so it's excluded rather than allowed to
+dominate a ranking purely because the raw edge number looks huge.
+
+- `parlay`/`game-bets` print every leg's model/book gap and mark excluded rows
+  `[excluded: model/book gap]`, with a summary count -- nothing is silently dropped from
+  the diagnostic table, only from the ranked parlay candidates below it.
+- `best-bet` applies the same filter before picking its single highest-edge leg per
+  market; if every available leg fails the filter, it says so instead of recommending one.
+- Set `--max-model-gap 1.0` to disable the filter entirely (restores the pre-filter
+  behavior of ranking purely on raw edge).
+- This is a plausibility heuristic, not a validated calibration result -- unlike the
+  usage-share covariate or low-sample sigma widening below, it hasn't been backtested
+  against historical outcomes (Kalshi's feed is real-time only, so there's no historical
+  price to backtest against). Treat the 30pp default as a sanity cap, not a tuned number.
 
 ### Odds file (`--odds`, optional -- overrides/supplements the Kalshi feed)
 
@@ -170,6 +192,28 @@ improving on both stats it applies to -- rec_yds 0.8702 -> 0.8412 (~3.3% better)
 improved, it's applied by default everywhere the model is used for a live prediction, not
 just in `backtest`. `pass_yds` has no analogous covariate (a starting QB doesn't share pass
 attempts the way a WR/RB shares targets/carries within his own team) and is unaffected.
+
+### Low-sample QB variance widening (pass_yds) — applied by default
+
+`predict`, `parlay`, and `best-bet` widen a QB's predicted `sigma` (uncertainty) when he
+has fewer than 4 games of history at fit time (including a QB the model has never seen
+at all) -- a backup's rare start is inherently higher-variance than an established
+starter's steady-state games, and the model previously gave every QB the same fixed
+uncertainty regardless of how little is actually known about him. See
+`docs/superpowers/specs/2026-09-16-nfl-props-low-sample-sigma-design.md` for the original
+design, and git history for the full story of a real sigma-pool-contamination bug found
+and fixed in a follow-up round (the original implementation accidentally mixed low-sample
+residuals into the "normal" players' own sigma estimate).
+
+Validated (1-year lookback, real data, run 2026-09-17, n=693): NLL improved 1.3020 ->
+1.2396 (~4.8% better) and the top-decile calibration bucket moved from 2.89% to 3.61% --
+correctly *toward* the 10% target this time, unlike an earlier contaminated version of
+this same mechanism which moved the wrong direction and was kept inert. Read this
+honestly, though: with n=693 the calibration shift is a small, statistically thin signal
+(close to one standard error), and 3.61% remains well short of both the 10% target and
+the ~6.6% baseline the original backup-QB-blowout diagnostic was built against on a
+different data window. `rec_yds`/`rush_yds` already calibrate correctly at the top decile
+and are unaffected -- this only touches `pass_yds`.
 
 ### `--pace-adjust` (diagnostic only, not applied by default)
 
@@ -405,9 +449,9 @@ a player-prop leg can't be combined into one parlay ticket yet.
 |---|---|
 | `game-ratings` | team power ratings (margin) + scoring/allowed ratings (totals) |
 | `game-predict --week N` | moneyline/spread/total fair probabilities for that week's games |
-| `game-bets --week N [--odds file.csv]` | edge vs. the real reference line built into `games.csv`, no CSV required to start; `--odds` overrides with your own prices |
+| `game-bets --week N [--odds file.csv] [--max-model-gap G]` | edge vs. the real reference line built into `games.csv`, no CSV required to start; `--odds` overrides with your own prices; `--max-model-gap` tunes the plausibility filter (see above, default `0.30`) |
 | `game-backtest` | walk-forward evaluation vs. a naive baseline (home-field-only for margin, league-average for totals) |
-| `best-bet --week N [--odds file.csv] [--log]` | the single highest-edge pick in each market: one game bet (from the real reference line) and one player prop (from the Kalshi feed by default, or `--odds`); `--log` appends the pick(s) to `data/picks_log.csv` |
+| `best-bet --week N [--odds file.csv] [--log] [--max-model-gap G]` | the single highest-edge pick in each market: one game bet (from the real reference line) and one player prop (from the Kalshi feed by default, or `--odds`); `--log` appends the pick(s) to `data/picks_log.csv`; `--max-model-gap` applies the same plausibility filter before picking |
 | `grade` | grade every logged pick whose game has finished against the real result, print the log with results, and show the running record/win rate/ROI |
 
 ### Tracking picks (`best-bet --log` / `grade`)
