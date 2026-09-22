@@ -276,31 +276,36 @@ def test_add_trailing_share_never_returns_nan():
 
 def _snap_share_stats():
     return pd.DataFrame([
-        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.60},
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-11"), "position_group": "WR", "offense_pct": 0.50},
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-18"), "position_group": "WR", "offense_pct": 0.55},
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-25"), "position_group": "WR", "offense_pct": 0.65},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.70},
         {"player_id": "P1", "date": pd.Timestamp("2025-09-08"), "position_group": "WR", "offense_pct": 0.80},
-        {"player_id": "P1", "date": pd.Timestamp("2025-09-15"), "position_group": "WR", "offense_pct": 0.90},
-        {"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.50},
+        {"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.10},
     ])
 
 
 def test_add_trailing_snap_share_never_uses_the_rows_own_game():
     df = _snap_share_stats()
     out = model.add_trailing_snap_share(df, halflife_days=180.0)
-    row1_sep15 = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-15"))].iloc[0]
+    row1_sep08 = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
     # Changing this row's own offense_pct must not change its own trailing_snap_share.
     df2 = df.copy()
-    df2.loc[(df2["player_id"] == "P1") & (df2["date"] == pd.Timestamp("2025-09-15")), "offense_pct"] = 0.01
+    df2.loc[(df2["player_id"] == "P1") & (df2["date"] == pd.Timestamp("2025-09-08")), "offense_pct"] = 0.01
     out2 = model.add_trailing_snap_share(df2, halflife_days=180.0)
-    row1_sep15_changed = out2[(out2["player_id"] == "P1") & (out2["date"] == pd.Timestamp("2025-09-15"))].iloc[0]
-    assert row1_sep15["trailing_snap_share"] == pytest.approx(row1_sep15_changed["trailing_snap_share"])
+    row1_sep08_changed = out2[(out2["player_id"] == "P1") & (out2["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    assert row1_sep08["trailing_snap_share"] == pytest.approx(row1_sep08_changed["trailing_snap_share"])
 
 
 def test_add_trailing_snap_share_matches_hand_computed_weighted_average():
     df = _snap_share_stats()
     out = model.add_trailing_snap_share(df, halflife_days=180.0)
-    row = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-15"))].iloc[0]
-    days_ago = np.array([14.0, 7.0])  # from 2025-09-01 and 2025-09-08
-    shares = np.array([0.60, 0.80])
+    row = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    # P1's 5th game has exactly NEW_PLAYER_GAMES(4) prior games -- n_prior == 4 is NOT
+    # "low" (low is strictly <), so this row must use its own raw computed weighted
+    # average over all 4 prior games, not the group fallback.
+    days_ago = np.array([28.0, 21.0, 14.0, 7.0])  # from 08-11, 08-18, 08-25, 09-01 to 09-08
+    shares = np.array([0.50, 0.55, 0.65, 0.70])
     w = 0.5 ** (days_ago / 180.0)
     expected = float(np.sum(w * shares) / np.sum(w))
     assert row["trailing_snap_share"] == pytest.approx(expected)

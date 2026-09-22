@@ -212,9 +212,7 @@ def add_trailing_snap_share(stats: pd.DataFrame, halflife_days: float = 180.0) -
     group_fallback = enough.groupby("position_group")["trailing_snap_share"].mean()
     overall_fallback = float(enough["trailing_snap_share"].mean()) if len(enough) else 0.0
     low = df["_n_prior"] < NEW_PLAYER_GAMES
-    no_value = df["trailing_snap_share"].isna()
-    need_fallback = low & no_value
-    df.loc[need_fallback, "trailing_snap_share"] = df.loc[need_fallback, "position_group"].map(group_fallback).fillna(overall_fallback)
+    df.loc[low, "trailing_snap_share"] = df.loc[low, "position_group"].map(group_fallback).fillna(overall_fallback)
     df["trailing_snap_share"] = df["trailing_snap_share"].fillna(overall_fallback)
 
     return df.drop(columns=["_n_prior"])
