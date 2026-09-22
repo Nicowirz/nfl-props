@@ -16,6 +16,7 @@ STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_p
 GAMES_URL = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
 ROSTER_URL = "https://github.com/nflverse/nflverse-data/releases/download/weekly_rosters/roster_weekly_{season}.csv"
 PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/players/players.csv"
+SNAP_COUNTS_URL = "https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_{season}.csv"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 STATS_KEEP = [
@@ -122,3 +123,35 @@ def load_players(refresh: bool = False) -> pd.DataFrame:
     raw = _fetch(PLAYERS_URL, DATA_DIR / "players.csv", max_age_hours=24 * 30, refresh=refresh)
     out = raw[["gsis_id", "pfr_id"]].dropna().drop_duplicates()
     return out.rename(columns={"gsis_id": "player_id"}).reset_index(drop=True)
+
+
+def load_snap_counts(seasons: int = 3, refresh: bool = False, today: date | None = None) -> pd.DataFrame:
+    """Offense snap share per player-game (PFR-keyed -- join_snap_counts() below maps it
+    onto this pipeline's gsis_id player_id). Same per-season download/cache/skip-missing-
+    current-season pattern as load_player_stats().
+    """
+    cur = current_season_start(today)
+    frames = []
+    for season in range(cur - seasons + 1, cur + 1):
+        max_age = 6 if season == cur else 24 * 365 * 10
+        try:
+            raw = _fetch(SNAP_COUNTS_URL.format(season=season),
+                        DATA_DIR / f"snap_counts_{season}.csv", max_age, refresh)
+            frames.append(raw[["game_id", "pfr_player_id", "position", "team", "offense_pct"]].copy())
+        except urllib.error.HTTPError as e:
+            if season == cur and e.code == 404:
+                continue
+            raise
+    if not frames:
+        return pd.DataFrame(columns=["game_id", "pfr_player_id", "position", "team", "offense_pct"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def join_snap_counts(snaps: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
+    """Map snap_counts' pfr_player_id onto this pipeline's gsis_id-based player_id via the
+    players crosswalk. A snap-count row with no crosswalk match is dropped, not a hard
+    failure -- the same "skipped, not fatal" treatment the Kalshi feed already gives an
+    unmatched player name.
+    """
+    merged = snaps.merge(players, left_on="pfr_player_id", right_on="pfr_id", how="inner")
+    return merged[["game_id", "player_id", "team", "offense_pct"]].reset_index(drop=True)
