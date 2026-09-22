@@ -21,18 +21,19 @@ import pandas as pd
 from . import model
 
 STAT_COLUMN = {"receptions": "receptions", "pass_td": "passing_tds",
-              "rush_td": "rushing_tds", "rec_td": "receiving_tds"}
+              "rush_td": "rushing_tds", "rec_td": "receiving_tds", "targets": "targets"}
 QUALIFY_COLUMN = {"receptions": "targets", "pass_td": "attempts",
-                  "rush_td": "carries", "rec_td": "targets"}
-QUALIFY_MIN = {"receptions": 2, "pass_td": 10, "rush_td": 5, "rec_td": 2}
+                  "rush_td": "carries", "rec_td": "targets", "targets": "targets"}
+QUALIFY_MIN = {"receptions": 2, "pass_td": 10, "rush_td": 5, "rec_td": 2, "targets": 2}
 RELEVANT_POSITIONS = {
     "receptions": {"QB", "RB", "TE", "WR"}, "pass_td": {"QB"},
     "rush_td": {"QB", "RB", "TE", "WR"}, "rec_td": {"QB", "RB", "TE", "WR"},
+    "targets": {"QB", "RB", "TE", "WR"},
 }
-# Only receptions has a usage-share covariate in v1 (target share, same driver as
-# rec_yds). A red-zone-share covariate would be the natural analog for touchdown rates
-# but is out of scope -- see the design spec's model-extension section.
-SHARE_STATS = {"receptions"}
+# Only receptions and targets have a usage-share covariate in v1 (target share drives
+# both). A red-zone-share covariate would be the natural analog for touchdown rates but
+# is out of scope -- see the design spec's model-extension section.
+SHARE_STATS = {"receptions", "targets"}
 
 MAX_IRLS_ITER = 25
 IRLS_TOL = 1e-6
