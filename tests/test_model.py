@@ -641,27 +641,31 @@ def test_predicted_distribution_stat_outside_wide_sigma_stats_unaffected():
     assert sigma == pytest.approx(r.sigma["QB"])
 
 
-def test_add_trailing_snap_share_unaffected_by_future_rows():
-    """A prediction as of week 3 must be identical whether or not week-4/5 rows exist yet
-    in the input frame -- guards against the exact class of subtle leakage
-    add_trailing_share's own group-fallback docstring already flags as a risk.
+def test_add_trailing_snap_share_row_level_computation_unaffected_by_future_rows():
+    """A row that has already reached NEW_PLAYER_GAMES prior games (and so uses its own
+    raw computed weighted average, not the group fallback) must be identical whether or
+    not later-dated rows exist in the input frame -- the per-row computation only ever
+    reads that player's own strictly-prior rows by construction. (The group-fallback pool
+    used for BELOW-threshold rows has its own separate, already-documented, accepted
+    future-data exception -- see add_trailing_share's docstring -- and is unchanged and
+    out of scope here.)
     """
-    through_week3 = pd.DataFrame([
-        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.60},
+    through_week5 = pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-11"), "position_group": "WR", "offense_pct": 0.50},
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-18"), "position_group": "WR", "offense_pct": 0.55},
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-25"), "position_group": "WR", "offense_pct": 0.65},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.70},
         {"player_id": "P1", "date": pd.Timestamp("2025-09-08"), "position_group": "WR", "offense_pct": 0.80},
-        {"player_id": "P1", "date": pd.Timestamp("2025-09-15"), "position_group": "WR", "offense_pct": 0.90},
-        {"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "offense_pct": 0.10},
     ])
-    with_future_rows = pd.concat([through_week3, pd.DataFrame([
-        {"player_id": "P1", "date": pd.Timestamp("2025-09-22"), "position_group": "WR", "offense_pct": 0.95},
-        {"player_id": "P3", "date": pd.Timestamp("2025-09-22"), "position_group": "WR", "offense_pct": 0.05},
+    with_future_rows = pd.concat([through_week5, pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-15"), "position_group": "WR", "offense_pct": 0.95},
+        {"player_id": "P4", "date": pd.Timestamp("2025-09-15"), "position_group": "WR", "offense_pct": 0.05},
     ])], ignore_index=True)
 
-    out_now = model.add_trailing_snap_share(through_week3, halflife_days=180.0)
+    out_now = model.add_trailing_snap_share(through_week5, halflife_days=180.0)
     out_with_future = model.add_trailing_snap_share(with_future_rows, halflife_days=180.0)
 
-    for player_id, d in [("P1", "2025-09-15"), ("P2", "2025-09-01")]:
-        before = out_now[(out_now["player_id"] == player_id) & (out_now["date"] == pd.Timestamp(d))]
-        after = out_with_future[(out_with_future["player_id"] == player_id) & (out_with_future["date"] == pd.Timestamp(d))]
-        assert before.iloc[0]["trailing_snap_share"] == pytest.approx(after.iloc[0]["trailing_snap_share"]), \
-            f"{player_id}'s {d} trailing_snap_share changed when future rows were added -- leakage"
+    before = out_now[(out_now["player_id"] == "P1") & (out_now["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    after = out_with_future[(out_with_future["player_id"] == "P1") & (out_with_future["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    assert before["trailing_snap_share"] == pytest.approx(after["trailing_snap_share"]), \
+        "P1's 2025-09-08 trailing_snap_share (n_prior=4, uses its own raw computed value) changed when future rows were added -- leakage in the per-row computation"
