@@ -183,6 +183,61 @@ print('+ snap_share:', rate_backtest.summarize(with_snap))
 "
 ```
 
+## team pass volume (TeamPassVolume, first validation)
+
+**Commit:** `4d617de` (master, run 2026-09-23). **Method:**
+`game_backtest.walk_forward_pass_volume()` — true walk-forward, refit every `(season,
+week)` using only data strictly before that date, scored against a naive league-
+expanding-average-pass_oe-so-far baseline (ignores team identity). Model:
+`game_model.fit_pass_volume()` (built in an earlier plan this session, previously only
+synthetic-recovery-tested) — one weighted-ridge rating per team on play-by-play-derived
+pass-rate-over-expected, mirroring `fit_margin`'s structure.
+
+| Metric | Value |
+|---|---|
+| NLL (model / baseline) | 3.2332461232319463 / 3.2579245739983143 |
+| n (team-games) | 568 |
+
+Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrated):
+
+```
+                n  mean_pit
+(-0.001, 0.1]  66  0.057429
+(0.1, 0.2]     67  0.149551
+(0.2, 0.3]     54  0.249168
+(0.3, 0.4]     50  0.348307
+(0.4, 0.5]     54  0.447089
+(0.5, 0.6]     59  0.553336
+(0.6, 0.7]     43  0.649720
+(0.7, 0.8]     47  0.754352
+(0.8, 0.9]     56  0.846659
+(0.9, 1.0]     72  0.950343
+```
+
+**Read honestly:** The model beats the naive league-average baseline by a very small margin (0.0247 nats, ~0.76% relative improvement) with calibration buckets distributed reasonably around the target 10%. This is a marginal positive result — the model does better than the baseline, but the advantage is extremely small, comparable in magnitude to the snap_share ablation's ~0.6% improvement which was assessed as too marginal to justify. This validation establishes that `fit_pass_volume()` can extract signal from play-by-play pass-rate data in a walk-forward setting, but it does not demonstrate practical predictive advantage over the naive baseline. The decision whether to use this as a covariate in the `targets` model (a separate, later decision per the plan) will depend on whether team pass-volume signal appears material when wired as a post-hoc calibrated sensitivity component.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+from nfl_props import data, game_backtest
+
+games = data.load_games()
+pbp = data.load_pbp(seasons=3)
+team_pass_rate = data.aggregate_pbp_team_pass_rate(pbp)
+dated = team_pass_rate.merge(games[['game_id', 'gameday']], on='game_id')
+start = (dated['gameday'].max() - timedelta(days=365)).date()
+
+preds = game_backtest.walk_forward_pass_volume(games, team_pass_rate, start,
+                                               halflife_days=365.0, reg=3.0, min_games=100)
+print(game_backtest.summarize(preds, 'actual_pass_oe'))
+print(game_backtest.calibration(preds, 'actual_pass_oe'))
+"
+```
+```
+
 ## Reproducing this baseline
 
 ```bash
