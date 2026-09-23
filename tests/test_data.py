@@ -161,3 +161,26 @@ def test_load_targets_drops_rows_with_no_position_group_match():
     out = data.load_targets(pbp, stats_missing_p2, games)
     assert len(out) == 2  # P2's target is dropped, not guessed
     assert "00-2222" not in set(out["player_id"])
+
+
+def test_load_targets_receiving_yards_is_nan_on_incompletion_not_zero():
+    """Real nflverse PBP records receiving_yards as NaN (not 0.0) on an incomplete pass --
+    confirmed against real data during this task's own sanity check (1312/1910 non-null
+    receiving_yards values, exactly matching the 68.7% completion rate). load_targets
+    must not paper over this with a 0.0 fill: "yards gained on a non-catch" isn't a
+    meaningful zero, it's genuinely undefined, and a future model must be free to decide
+    how to handle it (e.g. condition Yards|Reception only on complete==1 rows).
+    """
+    import numpy as np
+    pbp = pd.DataFrame([
+        {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
+         "receiver_player_id": "00-1111", "complete_pass": 0, "receiving_yards": np.nan, "air_yards": 9.0},
+    ])
+    stats = pd.DataFrame([{"player_id": "00-1111", "position_group": "WR"}])
+    games = pd.DataFrame([
+        {"game_id": "2025_01_ARI_NO", "gameday": pd.Timestamp("2025-09-07"), "home_team": "NO"},
+    ])
+    out = data.load_targets(pbp, stats, games)
+    assert len(out) == 1
+    assert out.iloc[0]["complete"] == 0.0
+    assert pd.isna(out.iloc[0]["receiving_yards"])  # NaN survives, not silently zeroed

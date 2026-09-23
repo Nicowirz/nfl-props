@@ -274,6 +274,10 @@ def load_targets(pbp: pd.DataFrame, stats: pd.DataFrame, games: pd.DataFrame) ->
     leakage risk), keyed by `player_id`; a target thrown to a player with no
     position_group match is dropped, not guessed. `home`/`date` come from `games`'
     schedule, matching the join pattern `game_model.fit_pass_volume` already uses.
+
+    `receiving_yards` is NaN (not 0.0) on an incomplete target, matching nflverse's own
+    convention -- a future model consuming this data must decide how to handle it (e.g.
+    only using receiving_yards where complete == 1), not have it silently zeroed here.
     """
     targets = pbp[(pbp["pass"] == 1) & pbp["receiver_player_id"].notna()].copy()
     targets = targets.rename(columns={"receiver_player_id": "player_id"})
