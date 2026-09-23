@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -107,17 +108,21 @@ def _synthetic_target_level_fixtures():
     pbp = pd.DataFrame([
         # ARI@NO: two targets to P1 (WR, one caught), one to P2 (TE, incomplete), one run play.
         {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
-         "receiver_player_id": "00-1111", "complete_pass": 1, "receiving_yards": 12.0, "air_yards": 8.0},
+         "receiver_player_id": "00-1111", "complete_pass": 1, "receiving_yards": 12.0,
+         "air_yards": 8.0, "two_point_attempt": 0, "season": 2025, "week": 1},
         {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
-         "receiver_player_id": "00-1111", "complete_pass": 0, "receiving_yards": 0.0, "air_yards": 15.0},
+         "receiver_player_id": "00-1111", "complete_pass": 0, "receiving_yards": 0.0,
+         "air_yards": 15.0, "two_point_attempt": 0, "season": 2025, "week": 1},
         {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
-         "receiver_player_id": "00-2222", "complete_pass": 0, "receiving_yards": 0.0, "air_yards": 6.0},
+         "receiver_player_id": "00-2222", "complete_pass": 0, "receiving_yards": 0.0,
+         "air_yards": 6.0, "two_point_attempt": 0, "season": 2025, "week": 1},
         {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 0,
-         "receiver_player_id": None, "complete_pass": 0, "receiving_yards": 0.0, "air_yards": 0.0},
+         "receiver_player_id": None, "complete_pass": 0, "receiving_yards": 0.0,
+         "air_yards": 0.0, "two_point_attempt": 0, "season": 2025, "week": 1},
     ])
     stats = pd.DataFrame([
-        {"player_id": "00-1111", "position_group": "WR"},
-        {"player_id": "00-2222", "position_group": "TE"},
+        {"player_id": "00-1111", "player_name": "Player One", "position_group": "WR"},
+        {"player_id": "00-2222", "player_name": "Player Two", "position_group": "TE"},
     ])
     games = pd.DataFrame([
         {"game_id": "2025_01_ARI_NO", "gameday": pd.Timestamp("2025-09-07"), "home_team": "NO"},
@@ -129,8 +134,9 @@ def test_load_targets_one_row_per_real_target():
     pbp, stats, games = _synthetic_target_level_fixtures()
     out = data.load_targets(pbp, stats, games)
     assert len(out) == 3  # the run play is excluded
-    assert set(out.columns) == {"player_id", "game_id", "date", "team", "opponent_team",
-                                "position_group", "home", "complete", "air_yards", "receiving_yards"}
+    assert set(out.columns) == {"player_id", "player_name", "game_id", "season", "week", "date",
+                                "team", "opponent_team", "position_group", "home", "complete",
+                                "air_yards", "receiving_yards"}
 
 
 def test_load_targets_attaches_position_group_and_outcome():
@@ -171,12 +177,12 @@ def test_load_targets_receiving_yards_is_nan_on_incompletion_not_zero():
     meaningful zero, it's genuinely undefined, and a future model must be free to decide
     how to handle it (e.g. condition Yards|Reception only on complete==1 rows).
     """
-    import numpy as np
     pbp = pd.DataFrame([
         {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
-         "receiver_player_id": "00-1111", "complete_pass": 0, "receiving_yards": np.nan, "air_yards": 9.0},
+         "receiver_player_id": "00-1111", "complete_pass": 0, "receiving_yards": np.nan,
+         "air_yards": 9.0, "two_point_attempt": 0, "season": 2025, "week": 1},
     ])
-    stats = pd.DataFrame([{"player_id": "00-1111", "position_group": "WR"}])
+    stats = pd.DataFrame([{"player_id": "00-1111", "player_name": "Test Player", "position_group": "WR"}])
     games = pd.DataFrame([
         {"game_id": "2025_01_ARI_NO", "gameday": pd.Timestamp("2025-09-07"), "home_team": "NO"},
     ])
@@ -184,3 +190,27 @@ def test_load_targets_receiving_yards_is_nan_on_incompletion_not_zero():
     assert len(out) == 1
     assert out.iloc[0]["complete"] == 0.0
     assert pd.isna(out.iloc[0]["receiving_yards"])  # NaN survives, not silently zeroed
+
+
+def test_load_targets_excludes_two_point_conversion_attempts():
+    """Real nflverse data always records complete_pass=0 on a 2pt attempt even when it
+    succeeded (verified against real cached data: 2024/2025/2026 all show this), and
+    air_yards is NaN on exactly these rows -- including them would inject wrong-label
+    noise and NaN air_yards into training data. Confirmed excluded regardless of the
+    row's own complete_pass value.
+    """
+    pbp = pd.DataFrame([
+        {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
+         "receiver_player_id": "00-1111", "complete_pass": 0, "receiving_yards": 0.0,
+         "air_yards": np.nan, "two_point_attempt": 1, "season": 2025, "week": 1},
+        {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
+         "receiver_player_id": "00-1111", "complete_pass": 1, "receiving_yards": 10.0,
+         "air_yards": 7.0, "two_point_attempt": 0, "season": 2025, "week": 1},
+    ])
+    stats = pd.DataFrame([{"player_id": "00-1111", "player_name": "Test Player", "position_group": "WR"}])
+    games = pd.DataFrame([
+        {"game_id": "2025_01_ARI_NO", "gameday": pd.Timestamp("2025-09-07"), "home_team": "NO"},
+    ])
+    out = data.load_targets(pbp, stats, games)
+    assert len(out) == 1  # only the non-2pt target survives
+    assert out.iloc[0]["complete"] == 1.0

@@ -23,7 +23,8 @@ PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/playe
 SNAP_COUNTS_URL = "https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_{season}.csv"
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.csv.gz"
 PBP_KEEP = ["game_id", "season", "week", "posteam", "defteam", "pass", "receiver_player_id",
-            "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass", "complete_pass"]
+            "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass", "complete_pass",
+            "two_point_attempt"]
 NGS_RECEIVING_URL = "https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_{season}_receiving.csv.gz"
 NGS_RECEIVING_KEEP = ["player_gsis_id", "season", "week", "avg_cushion", "avg_separation",
                       "avg_intended_air_yards", "percent_share_of_intended_air_yards",
@@ -270,26 +271,45 @@ def load_targets(pbp: pd.DataFrame, stats: pd.DataFrame, games: pd.DataFrame) ->
     aggregate_pbp_receiving()'s per-player-GAME aggregates: a logistic catch-rate model
     needs each target as its own Bernoulli trial, not pre-summed.
 
-    `position_group` comes from `stats` (the player's role label, not an outcome -- no
-    leakage risk), keyed by `player_id`; a target thrown to a player with no
-    position_group match is dropped, not guessed. `home`/`date` come from `games`'
-    schedule, matching the join pattern `game_model.fit_pass_volume` already uses.
+    Two-point conversion attempts are excluded: nflverse's `complete_pass` is always 0 on
+    these plays even when the conversion succeeded (verified live against real data --
+    2024/2025/2026 all show `complete_pass == 0` on every 2pt row despite real success
+    rates around 40-45%), and `air_yards` is NaN on exactly these rows and no others --
+    including them would inject wrong-label noise and the only NaN air_yards in the
+    dataset.
+
+    `position_group`/`player_name` come from `stats` (the player's role label, not an
+    outcome -- no leakage risk), keyed by `player_id`; a target thrown to a player with no
+    match is dropped, not guessed. Note this makes row inclusion depend on which `stats`
+    window the caller passes -- a date-filtered `stats` frame (as a walk-forward backtest
+    would pass) drops targets to players with no PRIOR stats rows, e.g. a rookie's
+    earliest targets. Not a leakage risk, but a real training-set composition effect a
+    future backtest should treat as a deliberate choice, not a surprise.
+
+    `home`/`date` come from `games`' schedule. Unlike `game_model.fit_pass_volume`, this
+    does NOT correct for neutral-site games -- it matches `load_player_stats`'s own
+    existing `home` convention instead.
 
     `receiving_yards` is NaN (not 0.0) on an incomplete target, matching nflverse's own
-    convention -- a future model consuming this data must decide how to handle it (e.g.
-    only using receiving_yards where complete == 1), not have it silently zeroed here.
+    convention. Verified against real data: `receiving_yards` is NEVER NaN when
+    `complete == 1` across all three cached seasons -- a future model can safely condition
+    on `complete == 1` before reading `receiving_yards` with no additional NaN check
+    needed. It IS NaN on most incomplete targets; a future model must decide how to
+    handle that case, not have it silently zeroed here.
     """
-    targets = pbp[(pbp["pass"] == 1) & pbp["receiver_player_id"].notna()].copy()
+    targets = pbp[(pbp["pass"] == 1) & pbp["receiver_player_id"].notna()
+                 & (pbp["two_point_attempt"] != 1)].copy()
     targets = targets.rename(columns={"receiver_player_id": "player_id"})
-    lookup = stats[["player_id", "position_group"]].drop_duplicates("player_id")
-    targets = targets.merge(lookup, on="player_id", how="inner")
+    lookup = stats[["player_id", "player_name", "position_group"]].drop_duplicates("player_id")
+    targets = targets.merge(lookup, on="player_id", how="inner", validate="m:1")
     sched = games[["game_id", "gameday", "home_team"]].dropna(subset=["gameday"])
-    targets = targets.merge(sched, on="game_id", how="inner")
+    targets = targets.merge(sched, on="game_id", how="inner", validate="m:1")
     targets["home"] = targets["posteam"] == targets["home_team"]
     targets["complete"] = targets["complete_pass"].astype(float)
     out = targets.rename(columns={"posteam": "team", "defteam": "opponent_team", "gameday": "date"})
-    return out[["player_id", "game_id", "date", "team", "opponent_team", "position_group",
-               "home", "complete", "air_yards", "receiving_yards"]].reset_index(drop=True)
+    return out[["player_id", "player_name", "game_id", "season", "week", "date", "team",
+               "opponent_team", "position_group", "home", "complete", "air_yards",
+               "receiving_yards"]].reset_index(drop=True)
 
 
 def stats_with_trailing_snap_share(stats: pd.DataFrame, seasons: int = 3, refresh: bool = False,
