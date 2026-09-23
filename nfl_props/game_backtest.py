@@ -83,6 +83,41 @@ def walk_forward_total(games: pd.DataFrame, start: date, halflife_days: float = 
     return pd.DataFrame(rows)
 
 
+def walk_forward_pass_volume(games: pd.DataFrame, team_pass_rate: pd.DataFrame, start: date,
+                             halflife_days: float = 365.0, reg: float = game_model.PASS_VOLUME_REG,
+                             min_games: int = game_model.MIN_PASS_VOLUME_GAMES) -> pd.DataFrame:
+    """Predict every team-game's pass_oe on/after `start`, refitting on (season, week)
+    change. Baseline: the league's expanding-average pass_oe so far (ignores team
+    identity). One row per team-per-game (not per game), matching fit_pass_volume()'s own
+    "team-games" counting convention -- team_pass_rate is already in this long format.
+    """
+    sched = games[["game_id", "gameday", "home_team", "away_team", "neutral", "season", "week"]].dropna(subset=["gameday"])
+    df = team_pass_rate.merge(sched, on="game_id", how="inner").dropna(subset=["pass_oe_game"]).sort_values("gameday")
+    df["home"] = (df["team"] == df["home_team"]) & (~df["neutral"])
+    rows = []
+    ratings = None
+    fit_week = None
+    league_values: list[float] = []
+    for _, g in df.iterrows():
+        y = float(g["pass_oe_game"])
+        if g["gameday"] >= pd.Timestamp(start):
+            week_key = (g["season"], g["week"])
+            if week_key != fit_week:
+                ratings = game_model.fit_pass_volume(games, team_pass_rate, as_of=g["gameday"].date(),
+                                                     halflife_days=halflife_days, reg=reg, min_games=min_games)
+                fit_week = week_key
+            mu, sigma = game_model.predicted_pass_volume(ratings, g["team"], bool(g["home"]))
+            base_mu = float(np.mean(league_values)) if league_values else ratings.intercept
+            base_sigma = ratings.sigma
+            rows.append({
+                "gameday": g["gameday"], "team": g["team"], "home": bool(g["home"]),
+                "actual_pass_oe": y, "model_mu": mu, "model_sigma": sigma,
+                "base_mu": base_mu, "base_sigma": base_sigma,
+            })
+        league_values.append(y)
+    return pd.DataFrame(rows)
+
+
 def _nll(y: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> float:
     sigma = np.maximum(sigma, EPS)
     return float(np.mean(0.5 * np.log(2 * np.pi * sigma ** 2) + (y - mu) ** 2 / (2 * sigma ** 2)))

@@ -65,3 +65,61 @@ def test_walk_forward_total_includes_league_avg_total():
     preds = game_backtest.walk_forward_total(df, start, min_games=20)
     assert "league_avg_total" in preds.columns
     assert (preds["league_avg_total"] > 0).all()
+
+
+def _synthetic_season_pass_volume(n_teams=16, n_weeks=14, seed=2):
+    """Multi-week synthetic team-game pass_oe observations with a real per-team tendency
+    spread, so a baseline that ignores team identity should score worse than the fitted
+    model. Mirrors _synthetic_season_margins()'s per-week structure, but returns two
+    frames (games, team_pass_rate) matching fit_pass_volume()'s own two real inputs.
+    """
+    rng = np.random.default_rng(seed)
+    teams = [f"T{i}" for i in range(n_teams)]
+    tendency = dict(zip(teams, rng.normal(0, 5.0, n_teams)))
+    intercept, home_field, sigma = 0.5, 2.0, 6.0
+    games_rows, rate_rows = [], []
+    for week in range(1, n_weeks + 1):
+        d = pd.Timestamp("2024-09-05") + pd.Timedelta(weeks=week - 1)
+        order = list(rng.permutation(teams))
+        for i in range(0, n_teams - 1, 2):
+            home, away = order[i], order[i + 1]
+            game_id = f"g{len(games_rows)}"
+            games_rows.append({
+                "game_id": game_id, "season": 2024, "game_type": "REG", "week": week,
+                "gameday": d, "home_team": home, "away_team": away, "neutral": False,
+            })
+            home_pass_oe = rng.normal(intercept + home_field + tendency[home], sigma)
+            away_pass_oe = rng.normal(intercept + tendency[away], sigma)
+            rate_rows.append({"game_id": game_id, "team": home, "pass_oe_game": home_pass_oe})
+            rate_rows.append({"game_id": game_id, "team": away, "pass_oe_game": away_pass_oe})
+    return pd.DataFrame(games_rows), pd.DataFrame(rate_rows)
+
+
+def test_walk_forward_pass_volume_produces_one_row_per_team_game_after_start():
+    games, team_pass_rate = _synthetic_season_pass_volume()
+    start = games["gameday"].iloc[len(games) // 2].date()
+    preds = game_backtest.walk_forward_pass_volume(games, team_pass_rate, start, min_games=20)
+    expected = len(team_pass_rate.merge(games[["game_id", "gameday"]], on="game_id")
+                   .pipe(lambda d: d[d["gameday"] >= pd.Timestamp(start)]))
+    assert len(preds) == expected
+    assert set(preds.columns) >= {"gameday", "team", "home", "actual_pass_oe",
+                                  "model_mu", "model_sigma", "base_mu", "base_sigma"}
+
+
+def test_pass_volume_model_beats_league_average_baseline():
+    games, team_pass_rate = _synthetic_season_pass_volume()
+    start = games["gameday"].iloc[len(games) // 2].date()
+    preds = game_backtest.walk_forward_pass_volume(games, team_pass_rate, start, min_games=20)
+    s = game_backtest.summarize(preds, "actual_pass_oe")
+    assert s["nll_model"] < s["nll_baseline"]
+
+
+def test_pass_volume_calibration_pit_is_roughly_uniform():
+    games, team_pass_rate = _synthetic_season_pass_volume(n_weeks=20)
+    start = games["gameday"].iloc[len(games) // 3].date()
+    preds = game_backtest.walk_forward_pass_volume(games, team_pass_rate, start, reg=0.1, min_games=20)
+    z = (preds["actual_pass_oe"] - preds["model_mu"]) / preds["model_sigma"]
+    pit = norm.cdf(z)
+    assert 0.35 < pit.mean() < 0.65
+    cal = game_backtest.calibration(preds, "actual_pass_oe")
+    assert cal["n"].sum() == len(preds)
