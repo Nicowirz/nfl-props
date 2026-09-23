@@ -101,3 +101,63 @@ def test_stats_with_trailing_snap_share_adds_leakage_safe_column():
     # Game 5's own (NaN -> 0.0-filled, since snaps has no week-5 entry) offense_pct must
     # never influence this -- only its 4 strictly-prior games' real values do.
     assert row5["trailing_snap_share"] > 0.5
+
+
+def _synthetic_target_level_fixtures():
+    pbp = pd.DataFrame([
+        # ARI@NO: two targets to P1 (WR, one caught), one to P2 (TE, incomplete), one run play.
+        {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
+         "receiver_player_id": "00-1111", "complete_pass": 1, "receiving_yards": 12.0, "air_yards": 8.0},
+        {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
+         "receiver_player_id": "00-1111", "complete_pass": 0, "receiving_yards": 0.0, "air_yards": 15.0},
+        {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 1,
+         "receiver_player_id": "00-2222", "complete_pass": 0, "receiving_yards": 0.0, "air_yards": 6.0},
+        {"game_id": "2025_01_ARI_NO", "posteam": "ARI", "defteam": "NO", "pass": 0,
+         "receiver_player_id": None, "complete_pass": 0, "receiving_yards": 0.0, "air_yards": 0.0},
+    ])
+    stats = pd.DataFrame([
+        {"player_id": "00-1111", "position_group": "WR"},
+        {"player_id": "00-2222", "position_group": "TE"},
+    ])
+    games = pd.DataFrame([
+        {"game_id": "2025_01_ARI_NO", "gameday": pd.Timestamp("2025-09-07"), "home_team": "NO"},
+    ])
+    return pbp, stats, games
+
+
+def test_load_targets_one_row_per_real_target():
+    pbp, stats, games = _synthetic_target_level_fixtures()
+    out = data.load_targets(pbp, stats, games)
+    assert len(out) == 3  # the run play is excluded
+    assert set(out.columns) == {"player_id", "game_id", "date", "team", "opponent_team",
+                                "position_group", "home", "complete", "air_yards", "receiving_yards"}
+
+
+def test_load_targets_attaches_position_group_and_outcome():
+    pbp, stats, games = _synthetic_target_level_fixtures()
+    out = data.load_targets(pbp, stats, games)
+    p1_rows = out[out["player_id"] == "00-1111"]
+    assert len(p1_rows) == 2
+    assert set(p1_rows["position_group"]) == {"WR"}
+    assert sorted(p1_rows["complete"]) == [0.0, 1.0]
+    caught = p1_rows[p1_rows["complete"] == 1.0].iloc[0]
+    assert caught["receiving_yards"] == 12.0
+    assert caught["air_yards"] == 8.0
+
+
+def test_load_targets_home_flag_and_date_from_schedule():
+    pbp, stats, games = _synthetic_target_level_fixtures()
+    out = data.load_targets(pbp, stats, games)
+    row = out.iloc[0]
+    assert row["date"] == pd.Timestamp("2025-09-07")
+    assert row["team"] == "ARI"
+    assert row["opponent_team"] == "NO"
+    assert row["home"] == False  # ARI is posteam, NO is home_team
+
+
+def test_load_targets_drops_rows_with_no_position_group_match():
+    pbp, stats, games = _synthetic_target_level_fixtures()
+    stats_missing_p2 = stats[stats["player_id"] != "00-2222"]
+    out = data.load_targets(pbp, stats_missing_p2, games)
+    assert len(out) == 2  # P2's target is dropped, not guessed
+    assert "00-2222" not in set(out["player_id"])

@@ -23,7 +23,7 @@ PLAYERS_URL = "https://github.com/nflverse/nflverse-data/releases/download/playe
 SNAP_COUNTS_URL = "https://github.com/nflverse/nflverse-data/releases/download/snap_counts/snap_counts_{season}.csv"
 PBP_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.csv.gz"
 PBP_KEEP = ["game_id", "season", "week", "posteam", "defteam", "pass", "receiver_player_id",
-            "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass"]
+            "receiving_yards", "air_yards", "epa", "xyac_epa", "pass_oe", "xpass", "complete_pass"]
 NGS_RECEIVING_URL = "https://github.com/nflverse/nflverse-data/releases/download/nextgen_stats/ngs_{season}_receiving.csv.gz"
 NGS_RECEIVING_KEEP = ["player_gsis_id", "season", "week", "avg_cushion", "avg_separation",
                       "avg_intended_air_yards", "percent_share_of_intended_air_yards",
@@ -262,6 +262,30 @@ def load_ngs_receiving(seasons: int = 3, refresh: bool = False, today: date | No
         return pd.DataFrame(columns=["player_id"] + NGS_RECEIVING_KEEP[1:])
     df = pd.concat(frames, ignore_index=True)
     return df.rename(columns={"player_gsis_id": "player_id"})
+
+
+def load_targets(pbp: pd.DataFrame, stats: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
+    """One row per real pass attempt at a real, identified receiver -- the target-level
+    training data CatchRate|Targets needs (spec section 1.2), distinct from
+    aggregate_pbp_receiving()'s per-player-GAME aggregates: a logistic catch-rate model
+    needs each target as its own Bernoulli trial, not pre-summed.
+
+    `position_group` comes from `stats` (the player's role label, not an outcome -- no
+    leakage risk), keyed by `player_id`; a target thrown to a player with no
+    position_group match is dropped, not guessed. `home`/`date` come from `games`'
+    schedule, matching the join pattern `game_model.fit_pass_volume` already uses.
+    """
+    targets = pbp[(pbp["pass"] == 1) & pbp["receiver_player_id"].notna()].copy()
+    targets = targets.rename(columns={"receiver_player_id": "player_id"})
+    lookup = stats[["player_id", "position_group"]].drop_duplicates("player_id")
+    targets = targets.merge(lookup, on="player_id", how="inner")
+    sched = games[["game_id", "gameday", "home_team"]].dropna(subset=["gameday"])
+    targets = targets.merge(sched, on="game_id", how="inner")
+    targets["home"] = targets["posteam"] == targets["home_team"]
+    targets["complete"] = targets["complete_pass"].astype(float)
+    out = targets.rename(columns={"posteam": "team", "defteam": "opponent_team", "gameday": "date"})
+    return out[["player_id", "game_id", "date", "team", "opponent_team", "position_group",
+               "home", "complete", "air_yards", "receiving_yards"]].reset_index(drop=True)
 
 
 def stats_with_trailing_snap_share(stats: pd.DataFrame, seasons: int = 3, refresh: bool = False,
