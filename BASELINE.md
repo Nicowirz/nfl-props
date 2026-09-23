@@ -189,7 +189,8 @@ print('+ snap_share:', rate_backtest.summarize(with_snap))
 `game_backtest.walk_forward_pass_volume()` — true walk-forward, refit every `(season,
 week)` using only data strictly before that date, scored against a naive league-
 expanding-average-pass_oe-so-far baseline (ignores team identity). Model:
-`game_model.fit_pass_volume()` (built in an earlier plan this session, previously only
+`game_model.fit_pass_volume()` (built in
+docs/superpowers/plans/2026-09-22-nfl-props-opportunity-model-targets.md, previously only
 synthetic-recovery-tested) — one weighted-ridge rating per team on play-by-play-derived
 pass-rate-over-expected, mirroring `fit_margin`'s structure.
 
@@ -214,7 +215,24 @@ Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrate
 (0.9, 1.0]     72  0.950343
 ```
 
-**Read honestly:** The model beats the naive league-average baseline by a very small margin (0.0247 nats, ~0.76% relative improvement) with calibration buckets distributed reasonably around the target 10%. This is a marginal positive result — the model does better than the baseline, but the advantage is extremely small, comparable in magnitude to the snap_share ablation's ~0.6% improvement which was assessed as too marginal to justify. This validation establishes that `fit_pass_volume()` can extract signal from play-by-play pass-rate data in a walk-forward setting, but it does not demonstrate practical predictive advantage over the naive baseline. The decision whether to use this as a covariate in the `targets` model (a separate, later decision per the plan) will depend on whether team pass-volume signal appears material when wired as a post-hoc calibrated sensitivity component.
+**Read honestly:** The model beats the naive league-average baseline by a small margin
+(0.0247 nats, ~0.76% relative NLL improvement) — a real but weak result. For honest
+context: every other model-vs-naive-baseline relative NLL gain recorded in this file is
+substantially larger (`pass_yds` 7.1%, `rush_yds` 25.9%, `rec_yds` 6.5%, `targets` 7.7%),
+so 0.76% is the weakest result in this file by that comparison, not a comparable one to
+any single-covariate ablation (which measures a different thing: model-vs-model, not
+model-vs-baseline). Because `base_sigma` equals `model_sigma` for every row in this
+backtest, the NLL gap is mathematically a rescaled mean-squared-error reduction — computed
+directly: MSE model = 37.488805256378086, MSE baseline = 39.183462183288206, a real
+4.3% reduction in squared error versus the naive baseline. This
+validation establishes that `fit_pass_volume()` extracts real, non-zero signal from
+play-by-play pass-rate data in a walk-forward setting, but the effect is weak by this
+project's own established standards and does not on its own justify using it as a
+covariate. **Inert:** no CLI command reads `fit_pass_volume` -- `game-backtest` still runs
+margin and totals only. This result alone does not ship anything live and does not decide
+whether `TeamPassVolume` becomes a covariate for the `targets` model -- that is a
+separate, later decision requiring its own real backtest, per
+`docs/superpowers/plans/2026-09-22-nfl-props-team-pass-volume-validation.md`.
 
 **Reproducing this result:**
 
