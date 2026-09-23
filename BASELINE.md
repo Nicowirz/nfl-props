@@ -236,7 +236,6 @@ print(game_backtest.summarize(preds, 'actual_pass_oe'))
 print(game_backtest.calibration(preds, 'actual_pass_oe'))
 "
 ```
-```
 
 ## Reproducing this baseline
 
