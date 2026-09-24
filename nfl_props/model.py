@@ -76,6 +76,10 @@ WIDE_SIGMA_STATS = {"pass_yds"}  # stats where a low-sample player's sigma is wi
 
 OFFSET = 10.0             # log(yards + OFFSET) stays finite even for a slightly negative rushing game
 NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-sample in output
+NEW_PLAYER_TARGETS = 4    # Target-count analog of NEW_PLAYER_GAMES (4), for trailing_air_yards below -- same
+                          # value and reasoning as catch_model.NEW_PLAYER_TARGETS / yards_model.NEW_PLAYER_CATCHES
+                          # (both 20), kept as a separate constant here rather than imported to avoid a circular
+                          # import (catch_model.py and yards_model.py both already import model.py).
 MIN_GROUP_RESIDUALS = 30  # fewer residuals than this in a position group -> fall back to sigma_global
 GROUP_INTERCEPT_REG = 0.05  # near-zero: only guards against a singular solve if a group has 0 rows
                            # in a given fit window, not meant to meaningfully shrink real estimates
@@ -216,6 +220,54 @@ def add_trailing_snap_share(stats: pd.DataFrame, halflife_days: float = 180.0) -
     low = df["_n_prior"] < NEW_PLAYER_GAMES
     df.loc[low, "trailing_snap_share"] = df.loc[low, "position_group"].map(group_fallback).fillna(overall_fallback)
     df["trailing_snap_share"] = df["trailing_snap_share"].fillna(overall_fallback)
+
+    return df.drop(columns=["_n_prior"])
+
+
+def add_trailing_air_yards(targets: pd.DataFrame, halflife_days: float = 180.0) -> pd.DataFrame:
+    """Add a "trailing_air_yards" column: each row's recency-weighted average air_yards
+    per target over that PLAYER's own strictly-prior TARGETS only -- a row's own target
+    never contributes to its own trailing_air_yards, mirroring add_trailing_share's/
+    add_trailing_snap_share's leakage safety exactly. Operates on
+    data.load_targets()'s per-target rows (not load_player_stats()'s per-player-game
+    rows, unlike add_trailing_share/add_trailing_snap_share) -- the natural grain for a
+    per-target aDOT proxy, since catch_model.predicted_catch_rate needs an air_yards
+    value per PREDICTION call, and no individual future target's real depth is knowable
+    ahead of time the way it is at fit time.
+
+    Below NEW_PLAYER_TARGETS prior targets, trailing_air_yards falls back to the
+    row-count-weighted average among that position group's players who DO have enough
+    history, mirroring add_trailing_share's own group-fallback pattern (including its
+    same documented, measured-negligible future-data exception for that fallback pool
+    only -- see add_trailing_share's docstring).
+
+    Returns rows sorted by (player_id, date), same caveat as add_trailing_share().
+    """
+    if "air_yards" not in targets.columns:
+        raise ValueError("add_trailing_air_yards requires an 'air_yards' column")
+    df = targets.sort_values(["player_id", "date"]).copy()
+    trailing = np.full(len(df), np.nan)
+    n_prior = np.zeros(len(df), dtype=int)
+    row_pos = {idx: i for i, idx in enumerate(df.index)}
+    for player_id, group in df.groupby("player_id", sort=False):
+        dates = group["date"].to_numpy()
+        vals = group["air_yards"].to_numpy(dtype=float)
+        for i, idx in enumerate(group.index):
+            pos = row_pos[idx]
+            n_prior[pos] = i
+            if i == 0:
+                continue
+            days_ago = (dates[i] - dates[:i]).astype("timedelta64[D]").astype(float)
+            trailing[pos] = _weighted_share(vals[:i], days_ago, halflife_days)
+
+    df = df.assign(trailing_air_yards=trailing, _n_prior=n_prior)
+
+    enough = df[df["_n_prior"] >= NEW_PLAYER_TARGETS]
+    group_fallback = enough.groupby("position_group")["trailing_air_yards"].mean()
+    overall_fallback = float(enough["trailing_air_yards"].mean()) if len(enough) else 0.0
+    low = df["_n_prior"] < NEW_PLAYER_TARGETS
+    df.loc[low, "trailing_air_yards"] = df.loc[low, "position_group"].map(group_fallback).fillna(overall_fallback)
+    df["trailing_air_yards"] = df["trailing_air_yards"].fillna(overall_fallback)
 
     return df.drop(columns=["_n_prior"])
 

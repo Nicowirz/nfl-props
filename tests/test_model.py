@@ -669,3 +669,81 @@ def test_add_trailing_snap_share_row_level_computation_unaffected_by_future_rows
     after = out_with_future[(out_with_future["player_id"] == "P1") & (out_with_future["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
     assert before["trailing_snap_share"] == pytest.approx(after["trailing_snap_share"]), \
         "P1's 2025-09-08 trailing_snap_share (n_prior=4, uses its own raw computed value) changed when future rows were added -- leakage in the per-row computation"
+
+
+def _air_yards_targets():
+    return pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-11"), "position_group": "WR", "air_yards": 6.0},
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-18"), "position_group": "WR", "air_yards": 9.0},
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-25"), "position_group": "WR", "air_yards": 4.0},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "air_yards": 12.0},
+        {"player_id": "P1", "date": pd.Timestamp("2025-09-08"), "position_group": "WR", "air_yards": 8.0},
+        {"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "air_yards": 15.0},
+    ])
+
+
+def test_add_trailing_air_yards_never_uses_the_rows_own_target():
+    df = _air_yards_targets()
+    out = model.add_trailing_air_yards(df, halflife_days=180.0)
+    row1_sep08 = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    # Changing this row's own air_yards must not change its own trailing_air_yards.
+    df2 = df.copy()
+    df2.loc[(df2["player_id"] == "P1") & (df2["date"] == pd.Timestamp("2025-09-08")), "air_yards"] = 99.0
+    out2 = model.add_trailing_air_yards(df2, halflife_days=180.0)
+    row1_sep08_changed = out2[(out2["player_id"] == "P1") & (out2["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    assert row1_sep08["trailing_air_yards"] == pytest.approx(row1_sep08_changed["trailing_air_yards"])
+
+
+def test_add_trailing_air_yards_matches_hand_computed_weighted_average():
+    df = _air_yards_targets()
+    out = model.add_trailing_air_yards(df, halflife_days=180.0)
+    row = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    days_ago = np.array([28.0, 21.0, 14.0, 7.0])
+    vals = np.array([6.0, 9.0, 4.0, 12.0])
+    w = 0.5 ** (days_ago / 180.0)
+    expected = float(np.sum(w * vals) / np.sum(w))
+    assert row["trailing_air_yards"] == pytest.approx(expected)
+
+
+def test_add_trailing_air_yards_low_history_uses_group_fallback():
+    df = _air_yards_targets()
+    out = model.add_trailing_air_yards(df, halflife_days=180.0)
+    first_target = out[(out["player_id"] == "P2") & (out["date"] == pd.Timestamp("2025-09-01"))].iloc[0]
+    assert not np.isnan(first_target["trailing_air_yards"])
+
+
+def test_add_trailing_air_yards_row_level_computation_unaffected_by_future_rows():
+    """A row that has already reached NEW_PLAYER_TARGETS prior targets (and so uses its
+    own raw computed weighted average, not the group fallback) must be identical
+    whether or not later-dated rows exist in the input frame -- the per-row computation
+    only ever reads that player's own strictly-prior rows by construction, mirroring
+    add_trailing_snap_share's own identical leakage-safety guard.
+    """
+    rows = [{"player_id": "P1", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * i),
+            "position_group": "WR", "air_yards": float(5 + i)} for i in range(20)]
+    through_20 = pd.DataFrame(rows)
+    with_future_rows = pd.concat([through_20, pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * 20),
+         "position_group": "WR", "air_yards": 99.0},
+        {"player_id": "P4", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * 20),
+         "position_group": "WR", "air_yards": 3.0},
+    ])], ignore_index=True)
+
+    out_now = model.add_trailing_air_yards(through_20, halflife_days=180.0)
+    out_with_future = model.add_trailing_air_yards(with_future_rows, halflife_days=180.0)
+
+    last_date = through_20["date"].max()
+    before = out_now[(out_now["player_id"] == "P1") & (out_now["date"] == last_date)].iloc[0]
+    after = out_with_future[(out_with_future["player_id"] == "P1") & (out_with_future["date"] == last_date)].iloc[0]
+    assert before["trailing_air_yards"] == pytest.approx(after["trailing_air_yards"]), \
+        "P1's last-row trailing_air_yards (n_prior=19, uses its own raw computed value) " \
+        "changed when future rows were added -- leakage in the per-row computation"
+
+
+def test_add_trailing_air_yards_raises_without_air_yards_column():
+    df = _air_yards_targets().drop(columns=["air_yards"])
+    try:
+        model.add_trailing_air_yards(df)
+        assert False, "expected ValueError for missing air_yards column"
+    except ValueError as e:
+        assert "air_yards" in str(e)
