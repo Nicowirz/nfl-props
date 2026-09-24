@@ -217,15 +217,22 @@ def test_yards_ratings_table_reflects_low_sample_threshold():
     """Regression guard for the exact class of bug CatchRatings.table() once had (a
     games-count threshold silently misapplied to a different unit) -- confirms
     YardsRatings.table()'s low_sample flag genuinely compares against catch counts, not
-    some other unit, by constructing a fixture with a player below NEW_PLAYER_CATCHES
-    and one above it and checking both flags land correctly.
+    some other unit. Uses a catch count (10) strictly between model.NEW_PLAYER_GAMES (4)
+    and NEW_PLAYER_CATCHES (20) for one player, so the test actually discriminates: the
+    correct threshold (20) flags this player low_sample=True, while the historical wrong
+    threshold (4, a games count) would have incorrectly left it False -- verified
+    empirically (via a real mutation of the comparison target) before this test was
+    written.
     """
     df, *_ = _synthetic_catches(catches_per_player=30)
+    low_sample_player = df["player_id"].iloc[0]
+    keep = df[df["player_id"] == low_sample_player].index[:10]
+    drop = df[(df["player_id"] == low_sample_player) & (~df.index.isin(keep))].index
+    df = df.drop(index=drop)
     r = yards_model.fit_yards_per_catch(df, min_catches=50)
-    table = r.table()
-    assert "low_sample" in table.columns
-    assert "catches" in table.columns
-    # every player in this fixture has 30 catches, comfortably above NEW_PLAYER_CATCHES
-    # (20) -- none should be flagged low_sample.
-    assert not table["low_sample"].any()
-    assert (table["catches"] == 30).all()
+    table = r.table().set_index("player")
+    assert table.loc[low_sample_player, "catches"] == 10
+    assert table.loc[low_sample_player, "low_sample"] == True
+    other_players = table.index[table.index != low_sample_player]
+    assert not table.loc[other_players, "low_sample"].any()
+    assert (table.loc[other_players, "catches"] == 30).all()
