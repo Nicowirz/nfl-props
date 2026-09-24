@@ -672,34 +672,42 @@ def test_add_trailing_snap_share_row_level_computation_unaffected_by_future_rows
 
 
 def _air_yards_targets():
-    return pd.DataFrame([
-        {"player_id": "P1", "date": pd.Timestamp("2025-08-11"), "position_group": "WR", "air_yards": 6.0},
-        {"player_id": "P1", "date": pd.Timestamp("2025-08-18"), "position_group": "WR", "air_yards": 9.0},
-        {"player_id": "P1", "date": pd.Timestamp("2025-08-25"), "position_group": "WR", "air_yards": 4.0},
-        {"player_id": "P1", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "air_yards": 12.0},
-        {"player_id": "P1", "date": pd.Timestamp("2025-09-08"), "position_group": "WR", "air_yards": 8.0},
-        {"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "air_yards": 15.0},
-    ])
+    """P1 has 21 targets before the 22nd (the row under test) -- one more than
+    NEW_PLAYER_TARGETS (20), so the row under test has n_prior=21 >= 20 and uses its own
+    raw computed weighted average, not the group fallback. P2 has exactly 1 target --
+    far below threshold, exercising the group-fallback path.
+    """
+    rows = []
+    d = pd.Timestamp("2025-08-11")
+    for i in range(21):
+        rows.append({"player_id": "P1", "date": d, "position_group": "WR", "air_yards": float(5 + i)})
+        d += pd.Timedelta(days=7)
+    rows.append({"player_id": "P1", "date": d, "position_group": "WR", "air_yards": 8.0})
+    rows.append({"player_id": "P2", "date": pd.Timestamp("2025-09-01"), "position_group": "WR", "air_yards": 15.0})
+    return pd.DataFrame(rows)
 
 
 def test_add_trailing_air_yards_never_uses_the_rows_own_target():
     df = _air_yards_targets()
     out = model.add_trailing_air_yards(df, halflife_days=180.0)
-    row1_sep08 = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
+    p1_rows = out[out["player_id"] == "P1"].sort_values("date")
+    last_date = p1_rows["date"].max()
+    row_under_test = p1_rows[p1_rows["date"] == last_date].iloc[0]
     # Changing this row's own air_yards must not change its own trailing_air_yards.
     df2 = df.copy()
-    df2.loc[(df2["player_id"] == "P1") & (df2["date"] == pd.Timestamp("2025-09-08")), "air_yards"] = 99.0
+    df2.loc[(df2["player_id"] == "P1") & (df2["date"] == last_date), "air_yards"] = 999.0
     out2 = model.add_trailing_air_yards(df2, halflife_days=180.0)
-    row1_sep08_changed = out2[(out2["player_id"] == "P1") & (out2["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
-    assert row1_sep08["trailing_air_yards"] == pytest.approx(row1_sep08_changed["trailing_air_yards"])
+    row_under_test_changed = out2[(out2["player_id"] == "P1") & (out2["date"] == last_date)].iloc[0]
+    assert row_under_test["trailing_air_yards"] == pytest.approx(row_under_test_changed["trailing_air_yards"])
 
 
 def test_add_trailing_air_yards_matches_hand_computed_weighted_average():
     df = _air_yards_targets()
     out = model.add_trailing_air_yards(df, halflife_days=180.0)
-    row = out[(out["player_id"] == "P1") & (out["date"] == pd.Timestamp("2025-09-08"))].iloc[0]
-    days_ago = np.array([28.0, 21.0, 14.0, 7.0])
-    vals = np.array([6.0, 9.0, 4.0, 12.0])
+    p1_rows = out[out["player_id"] == "P1"].sort_values("date")
+    row = p1_rows.iloc[-1]  # the 22nd row for P1, n_prior=21 (>= NEW_PLAYER_TARGETS=20)
+    days_ago = 7.0 * (21 - np.arange(21))
+    vals = np.array([5.0 + i for i in range(21)])
     w = 0.5 ** (days_ago / 180.0)
     expected = float(np.sum(w * vals) / np.sum(w))
     assert row["trailing_air_yards"] == pytest.approx(expected)
@@ -720,23 +728,23 @@ def test_add_trailing_air_yards_row_level_computation_unaffected_by_future_rows(
     add_trailing_snap_share's own identical leakage-safety guard.
     """
     rows = [{"player_id": "P1", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * i),
-            "position_group": "WR", "air_yards": float(5 + i)} for i in range(20)]
-    through_20 = pd.DataFrame(rows)
-    with_future_rows = pd.concat([through_20, pd.DataFrame([
-        {"player_id": "P1", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * 20),
+            "position_group": "WR", "air_yards": float(5 + i)} for i in range(21)]
+    through_21 = pd.DataFrame(rows)
+    with_future_rows = pd.concat([through_21, pd.DataFrame([
+        {"player_id": "P1", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * 21),
          "position_group": "WR", "air_yards": 99.0},
-        {"player_id": "P4", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * 20),
+        {"player_id": "P4", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * 21),
          "position_group": "WR", "air_yards": 3.0},
     ])], ignore_index=True)
 
-    out_now = model.add_trailing_air_yards(through_20, halflife_days=180.0)
+    out_now = model.add_trailing_air_yards(through_21, halflife_days=180.0)
     out_with_future = model.add_trailing_air_yards(with_future_rows, halflife_days=180.0)
 
-    last_date = through_20["date"].max()
+    last_date = through_21["date"].max()
     before = out_now[(out_now["player_id"] == "P1") & (out_now["date"] == last_date)].iloc[0]
     after = out_with_future[(out_with_future["player_id"] == "P1") & (out_with_future["date"] == last_date)].iloc[0]
     assert before["trailing_air_yards"] == pytest.approx(after["trailing_air_yards"]), \
-        "P1's last-row trailing_air_yards (n_prior=19, uses its own raw computed value) " \
+        "P1's last-row trailing_air_yards (n_prior=20, uses its own raw computed value) " \
         "changed when future rows were added -- leakage in the per-row computation"
 
 

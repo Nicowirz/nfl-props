@@ -76,7 +76,7 @@ WIDE_SIGMA_STATS = {"pass_yds"}  # stats where a low-sample player's sigma is wi
 
 OFFSET = 10.0             # log(yards + OFFSET) stays finite even for a slightly negative rushing game
 NEW_PLAYER_GAMES = 4      # fewer qualifying games than this -> flagged as low-sample in output
-NEW_PLAYER_TARGETS = 4    # Target-count analog of NEW_PLAYER_GAMES (4), for trailing_air_yards below -- same
+NEW_PLAYER_TARGETS = 20   # Target-count analog of NEW_PLAYER_GAMES (4), for trailing_air_yards below -- same
                           # value and reasoning as catch_model.NEW_PLAYER_TARGETS / yards_model.NEW_PLAYER_CATCHES
                           # (both 20), kept as a separate constant here rather than imported to avoid a circular
                           # import (catch_model.py and yards_model.py both already import model.py).
