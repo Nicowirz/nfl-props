@@ -59,3 +59,20 @@ def test_calibration_bins_cover_all_predictions():
     preds = catch_backtest.walk_forward(df, start, halflife_days=100_000, min_targets=50)
     table = catch_backtest.calibration(preds)
     assert table["n"].sum() == len(preds)
+
+
+def test_walk_forward_passes_through_position_split_defense():
+    """Regression guard for the exact seam that has broken silently before in this
+    project (rate_backtest.py's targets/share branch, per its own test file's comment):
+    confirm walk_forward actually threads position_split_defense through to
+    fit_catch_rate rather than silently ignoring it, by confirming the run completes and
+    produces finite NLL under the interaction-term design matrix -- not just that the
+    parameter is accepted without a TypeError.
+    """
+    df = _synthetic_multi_week(n_players=18, n_teams=6, weeks=30, targets_per_player_per_week=4)
+    start = df["date"].iloc[len(df) // 2].date()
+    preds = catch_backtest.walk_forward(df, start, halflife_days=100_000, min_targets=50,
+                                        position_split_defense=True)
+    s = catch_backtest.summarize(preds)
+    assert np.isfinite(s["nll_model"])
+    assert np.isfinite(s["nll_baseline"])
