@@ -261,7 +261,7 @@ print(game_backtest.calibration(preds, 'actual_pass_oe'))
 walk-forward lookback anchored to the most recent date in `data.load_targets()`'s output
 at run time, run 2026-09-23. **Method:** `catch_backtest.walk_forward()` -- true
 walk-forward, refit every `(season, week)` using only data strictly before that date,
-scored against a per-player recency-weighted trailing completion-rate baseline (blended
+scored against a per-player season-to-date completion-rate baseline (blended
 with the fitted model's own position-group base rate for players with no prior targets
 that season). Model: `catch_model.fit_catch_rate()`'s new logistic IRLS fit (player
 ability + opponent defense + home field + per-target aDOT, i.e. `air_yards`), built in
@@ -275,7 +275,7 @@ research checkpoint, not a shipping decision, matching how this file already tre
 | NLL (model / baseline) | 0.5864556345856085 / 0.6539519937394961 |
 | n | 17257 |
 
-Calibration (predicted-probability decile vs. actual catch rate in that decile):
+Calibration (predicted-probability bin, equal-width at 0.1 each, vs. actual catch rate in that bin):
 
 ```
                   n  mean_predicted  actual_rate
@@ -291,7 +291,7 @@ Calibration (predicted-probability decile vs. actual catch rate in that decile):
 (0.9, 1.0]       19        0.909892     0.684211
 ```
 
-**Read honestly:** The model beats the naive per-player recency-weighted baseline by
+**Read honestly:** The model beats the naive per-player season-to-date baseline by
 0.0675 nats (0.6539519937394961 - 0.5864556345856085 = 0.06749635915388763), a
 ~10.32% relative NLL improvement (`(0.6539519937394961 - 0.5864556345856085) /
 0.6539519937394961 = 0.10321301838675183`). This is a real win, and by this file's own
@@ -307,13 +307,14 @@ predictions) and `(0.8, 0.9]` (n=3379, ~20%), track closely -- 0.752066 predicte
 show a real, sample-size-backed divergence: `(0.1, 0.2]` (n=227) predicts 0.164089 but
 actually catches at 0.264317 (+0.10), and `(0.2, 0.3]` (n=342) predicts 0.249610 against
 an actual 0.307018 (+0.057) -- both bins have enough rows that this looks like systematic
-underprediction in the low-catch-probability range, not noise. The two extreme-tail bins,
-`(-0.001, 0.1]` (n=20) and `(0.9, 1.0]` (n=19), diverge the most (actual 0.150000 vs.
-predicted 0.083763, and actual 0.684211 vs. predicted 0.909892) but each holds under 20
-rows out of 17257, so those two are too small to read as a calibration problem rather
-than noise. Net: the model wins clearly on NLL, and calibration is solid in the bulk of
-the probability mass (0.7-0.9, ~57% of all predictions) with a real low-probability
-underprediction bias worth investigating in a future pass, not a tail artifact to ignore.
+underprediction in the low-catch-probability range, not noise. The largest single
+divergence is `(0.9, 1.0]` (n=19, actual 0.684211 vs. predicted 0.909892, -0.226), but
+with only 19 rows out of 17257 it is too small to read as a calibration problem rather
+than noise. `(-0.001, 0.1]` (n=20, actual 0.150000 vs. predicted 0.083763) is similarly
+too small a sample to be meaningful on its own. Net: the model wins clearly on NLL, and
+calibration is solid in the bulk of the probability mass (0.7-0.9, ~57% of all
+predictions) with a real low-probability underprediction bias worth investigating in a
+future pass, not a tail artifact to ignore.
 
 **Reproducing this result:**
 

@@ -37,6 +37,9 @@ IRLS_TOL = 1e-6
 # IRLS working-response/weight update (mirrors rate_model's np.maximum(mu, 1e-6) guard,
 # adapted for a bounded [0, 1] mean instead of an unbounded-above Poisson mean).
 MU_EPS = 1e-6
+# model.NEW_PLAYER_GAMES (4) is calibrated for a GAME count; a typical WR sees ~5
+# targets/game, so 20 targets is the target-count analog.
+NEW_PLAYER_TARGETS = 20
 
 
 @dataclass
@@ -62,7 +65,7 @@ class CatchRatings:
             "position": self.position_group.get(p, ""),
             "ability": self.ability[p],
             "targets": self.target_counts.get(p, 0),
-            "low_sample": self.target_counts.get(p, 0) < model.NEW_PLAYER_GAMES,
+            "low_sample": self.target_counts.get(p, 0) < NEW_PLAYER_TARGETS,
         } for p in self.players]
         return pd.DataFrame(rows).sort_values("ability", ascending=False).reset_index(drop=True)
 

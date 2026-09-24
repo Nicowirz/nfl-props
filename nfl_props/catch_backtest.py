@@ -1,17 +1,18 @@
 """Walk-forward evaluation for CatchRate | Targets (catch_model.py): refit every week,
 predict each target's catch probability, score average log-loss against a per-player
-recency-weighted trailing completion-rate baseline (blended with the fitted model's own
+season-to-date completion-rate baseline (blended with the fitted model's own
 position-group base rate when a player has no prior targets that season) -- mirrors
 rate_backtest.py's season-to-date-average baseline pattern and backtest.py's honesty
 framing (see its module docstring), adapted for a per-target Bernoulli row instead of a
 per-player-game count row.
 
-Calibration here is a standard binary reliability table (predicted-probability decile vs.
-actual catch rate in that decile), not the randomized-PIT bucketing rate_backtest.py uses
-for count data. PIT's randomization exists specifically to correct discretization bias
-for distributions with many integer support points; a Bernoulli outcome has only two
-(0, 1), so a reliability diagram is the standard, more legible tool here -- it directly
-answers "when the model says 70%, does it happen about 70% of the time".
+Calibration here is a standard binary reliability table (predicted-probability bin,
+equal-width at 0.1 each, vs. actual catch rate in that bin), not the randomized-PIT
+bucketing rate_backtest.py uses for count data. PIT's randomization exists specifically
+to correct discretization bias for distributions with many integer support points; a
+Bernoulli outcome has only two (0, 1), so a reliability diagram is the standard, more
+legible tool here -- it directly answers "when the model says 70%, does it happen about
+70% of the time".
 """
 from __future__ import annotations
 
