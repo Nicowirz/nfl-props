@@ -755,3 +755,51 @@ def test_add_trailing_air_yards_raises_without_air_yards_column():
         assert False, "expected ValueError for missing air_yards column"
     except ValueError as e:
         assert "air_yards" in str(e)
+
+
+def test_add_trailing_air_yards_first_target_of_a_game_excludes_that_games_own_later_targets():
+    """A player's FIRST target within a game reflects only strictly-prior-GAME history --
+    confirms the leakage guard the real validation harness relies on (taking the first row
+    per (player_id, game_id) via drop_duplicates) is genuinely correct, not incidental.
+    Also confirms a LATER target in the same game legitimately differs (picks up the
+    earlier same-game target(s) too) -- this is documented, expected per-target behavior,
+    not a bug.
+    """
+    rows = [{"player_id": "P1", "date": pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * i),
+            "position_group": "WR", "game_id": f"G{i}", "air_yards": float(5 + i)} for i in range(21)]
+    # Three targets in ONE game (same date, same game_id) on top of the 21 prior games.
+    same_game_date = pd.Timestamp("2025-08-11") + pd.Timedelta(days=7 * 21)
+    rows += [
+        {"player_id": "P1", "date": same_game_date, "position_group": "WR", "game_id": "G21", "air_yards": 6.0},
+        {"player_id": "P1", "date": same_game_date, "position_group": "WR", "game_id": "G21", "air_yards": 40.0},
+        {"player_id": "P1", "date": same_game_date, "position_group": "WR", "game_id": "G21", "air_yards": 40.0},
+    ]
+    df = pd.DataFrame(rows)
+    out = model.add_trailing_air_yards(df, halflife_days=180.0)
+
+    game_targets = out[(out["player_id"] == "P1") & (out["game_id"] == "G21")].reset_index(drop=True)
+    assert len(game_targets) == 3
+
+    # The FIRST target of G21 must equal the hand-computed weighted average over exactly
+    # the 21 strictly-prior games (same formula as
+    # test_add_trailing_air_yards_matches_hand_computed_weighted_average). Computed
+    # independently of the function under test, rather than by re-deriving it from a
+    # second add_trailing_air_yards() call on a G21-less frame: that second frame only has
+    # 21 rows total, so ITS last row reflects just 20 strictly-prior rows, not 21 -- an
+    # off-by-one mismatch, not the quantity we actually want to check against.
+    days_ago = 7.0 * (21 - np.arange(21))
+    vals = np.array([5.0 + i for i in range(21)])
+    w = 0.5 ** (days_ago / 180.0)
+    expected_first = float(np.sum(w * vals) / np.sum(w))
+    assert game_targets.loc[0, "trailing_air_yards"] == pytest.approx(expected_first)
+
+    # The SECOND and THIRD targets of G21 must differ from the first -- they've now seen
+    # G21's own earlier target(s) too, which is expected per-target (not per-game) behavior.
+    assert game_targets.loc[1, "trailing_air_yards"] != pytest.approx(game_targets.loc[0, "trailing_air_yards"])
+    assert game_targets.loc[2, "trailing_air_yards"] != pytest.approx(game_targets.loc[0, "trailing_air_yards"])
+
+    # The documented mitigation: taking the FIRST row per (player_id, game_id) recovers
+    # the leakage-safe, prior-games-only value.
+    first_per_game = out.sort_values(["player_id", "date"]).drop_duplicates(["player_id", "game_id"], keep="first")
+    recovered = first_per_game[(first_per_game["player_id"] == "P1") & (first_per_game["game_id"] == "G21")].iloc[0]
+    assert recovered["trailing_air_yards"] == pytest.approx(expected_first)

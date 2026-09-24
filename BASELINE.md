@@ -606,6 +606,7 @@ whether Stage 1's decomposition beats the existing model, not a shipping decisio
 | Composition (Targets x CatchRate x Yards\|Reception) | `4490` | `17.970320761320977` | `25.44482184833516` |
 | Existing direct model, full population (median prediction) | `6387` | `13.463997241868164` | `22.288854954881792` |
 | Existing direct model, **matched subset** (same `4490` rows as composition -- apples-to-apples) | `4490` | `17.740159480038965` | `26.343101223202684` |
+| Existing direct model, matched subset, **mean prediction** (like-for-like estimator) | `4490` | `17.930798126483605` | `25.563644681842522` |
 
 **Correction (post-review):** the first version of this section compared the composition
 (`n=4490`) against the direct model's **full-population** numbers (`n=6387`) and called
@@ -627,27 +628,43 @@ honest apples-to-apples comparison and the one the "Read honestly" paragraph bel
 based on. The full-population row is kept in the table above for transparency but should
 **not** be read as the composition's real relative performance.
 
-**Read honestly:** On the matched subset (`n=4490` on both sides), this is a genuine
-**mixed result**, not a clean win or a clean loss. Composition MAE `17.970320761320977`
-vs. direct model (matched) MAE `17.740159480038965`: `(dm_mae - comp_mae) / dm_mae =
-(17.740159480038965 - 17.970320761320977) / 17.740159480038965 = -0.012974025489510774`,
-i.e. the composition's MAE is **1.30% worse** (relatively) -- a narrow loss, close to a
-statistical tie given the size of this window. Composition RMSE `25.44482184833516` vs.
-direct model (matched) RMSE `26.343101223202684`: `(dm_rmse - comp_rmse) / dm_rmse =
-(26.343101223202684 - 25.44482184833516) / 26.343101223202684 = 0.03409922648273206`,
-i.e. the composition's RMSE is **3.41% better** (relatively) -- a real win on this metric.
-So: the composition narrowly loses MAE and wins RMSE against the model it was built to
-replace, once both are scored on the identical population. Quoting the spec's own gate
-directly: "If Model 6 doesn't beat Model 5 ... it is not shipped." This mixed result does
-**not cleanly pass** that gate -- it does not beat the direct model on both metrics -- but
-it is a materially different, and much closer, result than the original write-up's false
-"unambiguous loss, no winning framing" claim; there **is** a real framing (RMSE, on the
-matched subset) under which the composition wins. (Note for the reader: this stage
-validates the POINT ESTIMATE only, not the full NLL/calibration criteria the spec's gate
-literally names for the eventual full Monte Carlo model -- MAE/RMSE is the honest analog
-available at this stage, not a substitute for the real gate check the full Monte Carlo
-plan will need to run. A near-tie-on-MAE/win-on-RMSE point-estimate result is genuinely
-ambiguous input for that later decision, not a clear green light or a clear stop.)
+**A second correction (same review pass):** the matched-subset comparison above still
+compares two different kinds of point prediction -- the composition returns a MEAN
+(`markets.mean_yards`), while the direct model's own comparison figure is its MEDIAN
+(`exp(model_mu) - OFFSET`). MAE is minimized by a median predictor and RMSE by a mean
+predictor, so this estimator mismatch mechanically favors a median predictor on MAE and a
+mean predictor on RMSE, regardless of which underlying model is better. Scoring the direct
+model on its own mean instead (same ratings, same matched rows, same run) gives MAE
+`17.930798126483605` and RMSE `25.563644681842522` -- a like-for-like comparison. Under
+that comparison, `rel_mae = (17.930798126483605 - 17.970320761320977) / 17.930798126483605
+= -0.0022041759969957673` (composition **0.22% worse**, essentially a tie) and `rel_rmse =
+(25.563644681842522 - 25.44482184833516) / 25.563644681842522 = 0.004648117863716067`
+(composition **0.46% better**, a real but very small edge). The honest read of a properly
+estimator-matched comparison is a **near-exact dead heat on both metrics** -- not the
+"narrowly loses MAE, really wins RMSE (+3.41%)" framing the mean-vs-median comparison above
+implies.
+
+**Read honestly:** The primary, estimator-matched comparison (composition mean vs. direct
+model mean, `n=4490` on both sides) is a genuine **near-exact dead heat**: composition MAE
+is `0.22%` worse and RMSE is `0.46%` better than the direct model's own mean prediction --
+both differences are small enough, on a window this size, to read as noise rather than a
+real edge either way. For context, the mean-vs-median comparison (composition mean vs. the
+direct model's median, its comparison figure elsewhere in this file) shows a larger spread
+-- composition MAE `1.30%` worse, RMSE `3.41%` better -- but that spread is now understood
+to be partly an artifact of comparing two different estimator types (MAE favors a median
+predictor, RMSE favors a mean predictor), not a clean reflection of relative model quality.
+Quoting the spec's own gate directly: "If Model 6 doesn't beat Model 5 ... it is not
+shipped." Neither comparison constitutes a clear pass of that gate -- the composition does
+not clearly beat the direct model on either metric, under either estimator pairing -- but
+this is also not a clear loss: the small mean-vs-mean RMSE edge (`+0.46%`) is real, just
+small, and the MAE gap is close enough to call a tie. This is a materially different, and
+much closer, result than the original write-up's false "unambiguous loss, no winning
+framing" claim. (Note for the reader: this stage validates the POINT ESTIMATE only, not the
+full NLL/calibration criteria the spec's gate literally names for the eventual full Monte
+Carlo model -- MAE/RMSE is the honest analog available at this stage, not a substitute for
+the real gate check the full Monte Carlo plan will need to run. A near-dead-heat
+point-estimate result is genuinely ambiguous input for that later decision, not a clear
+green light or a clear stop.)
 
 **Reproducing this result:**
 
@@ -692,7 +709,7 @@ for _, g in relevant.iterrows():
     ay = g['trailing_air_yards']
     if pd.isna(ay):
         skipped_no_air_yards += 1
-        continue  # no target history at all for this player-game -- skip; there is no
+        continue  # no targets in this game at all -- nothing to average; there is no
                   # safe air_yards fallback (see composition.py's module docstring)
     point_est = composition.predicted_rec_yds_point_estimate(
         rate_r, catch_r, yards_r, g['player_id'], g['position_group'], g['opponent_team'],
@@ -721,6 +738,11 @@ matched = direct_preds.merge(comp_keys, on=['player_id', 'date'], how='inner')
 matched_mae = float(np.mean(np.abs(matched['actual_yards'] - matched['direct_median'])))
 matched_rmse = float(np.sqrt(np.mean((matched['actual_yards'] - matched['direct_median']) ** 2)))
 print('Direct model (matched subset):', {'n': len(matched), 'MAE': matched_mae, 'RMSE': matched_rmse})
+
+matched_mean = np.exp(matched['model_mu'] + matched['model_sigma'] ** 2 / 2) - model.OFFSET
+matched_mean_mae = float(np.mean(np.abs(matched['actual_yards'] - matched_mean)))
+matched_mean_rmse = float(np.sqrt(np.mean((matched['actual_yards'] - matched_mean) ** 2)))
+print('Direct model (matched subset, mean):', {'n': len(matched), 'MAE': matched_mean_mae, 'RMSE': matched_mean_rmse})
 "
 ```
 

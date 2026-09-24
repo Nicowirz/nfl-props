@@ -241,11 +241,23 @@ def add_trailing_air_yards(targets: pd.DataFrame, halflife_days: float = 180.0) 
     same documented, measured-negligible future-data exception for that fallback pool
     only -- see add_trailing_share's docstring).
 
+    Multiple targets on the SAME date (i.e. multiple targets in one game) are NOT treated
+    as a single unit -- each is its own row, and a later same-game target's trailing
+    average DOES include that game's own earlier target(s) (only strictly-PRIOR-DATE rows
+    are excluded, not strictly-prior-GAME rows). A caller who wants exactly one
+    leakage-safe value per player-GAME (e.g. to merge onto `load_player_stats()`'s
+    per-game rows) must take the FIRST target of each game -- e.g.
+    `df.drop_duplicates(["player_id", "game_id"], keep="first")` on this function's
+    OUTPUT, sorted as returned -- since that row's trailing average is computed over
+    strictly-prior GAMES only (no same-game target has been seen yet). The internal sort
+    uses `kind="stable"` specifically so this "first row per game" selection is
+    deterministic for players with multiple same-date targets.
+
     Returns rows sorted by (player_id, date), same caveat as add_trailing_share().
     """
     if "air_yards" not in targets.columns:
         raise ValueError("add_trailing_air_yards requires an 'air_yards' column")
-    df = targets.sort_values(["player_id", "date"]).copy()
+    df = targets.sort_values(["player_id", "date"], kind="stable").copy()
     trailing = np.full(len(df), np.nan)
     n_prior = np.zeros(len(df), dtype=int)
     row_pos = {idx: i for i, idx in enumerate(df.index)}
