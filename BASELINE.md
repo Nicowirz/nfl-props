@@ -336,6 +336,85 @@ print(catch_backtest.calibration(preds))
 "
 ```
 
+### position-split opponent-defense ablation
+
+**Commit:** `7353ff8` (master). **Method:** same `catch_backtest.walk_forward()` setup as
+the base `CatchRate | Targets` section above, with one additional step:
+`position_split_defense=True`, per
+`docs/superpowers/plans/2026-09-23-nfl-props-catch-rate-position-split-defense.md` -- the
+spec's own next Stage 1 ablation step (`## Ablation plan`). Base is re-run under the same
+commit/data window for a same-run, apples-to-apples comparison rather than reused from
+the prior section's recorded number.
+
+| Run | n | NLL model | NLL baseline |
+|---|---|---|---|
+| Base (single opponent scalar) | `17257` | `0.5864556345856085` | `0.6539519937394961` |
+| + position_split_defense | `17257` | `0.5874359273471375` | `0.6539746941168135` |
+
+Note: `NLL baseline` is **not** necessarily comparable across the two rows -- as the
+`snap_share ablation` subsection above already establishes for the identical reason, the
+baseline is derived from the model's own fitted position-group intercepts, which can
+shift between configurations. Only the model-vs-model `NLL model` comparison is a valid
+read here.
+
+Calibration under `+ position_split_defense` (predicted-probability bin, equal-width at
+0.1 each, vs. actual catch rate in that bin):
+
+```
+                  n  mean_predicted  actual_rate
+(-0.001, 0.1]    21        0.083708     0.142857
+(0.1, 0.2]      223        0.163567     0.282511
+(0.2, 0.3]      341        0.248359     0.299120
+(0.3, 0.4]      516        0.354765     0.344961
+(0.4, 0.5]      962        0.457086     0.432432
+(0.5, 0.6]     1871        0.555871     0.541956
+(0.6, 0.7]     3498        0.656895     0.628931
+(0.7, 0.8]     6308        0.751021     0.757134
+(0.8, 0.9]     3477        0.833784     0.814783
+(0.9, 1.0]       40        0.908739     0.700000
+```
+
+**Read honestly:** Adding `position_split_defense` made NLL model *worse*, not better --
+it moved from 0.5864556345856085 (Base) to 0.5874359273471375 (+ position_split_defense),
+a change of +0.0009802927615290002 nats. Using the required formula, `(nll_model_base -
+nll_model_split) / nll_model_base = (0.5864556345856085 - 0.5874359273471375) /
+0.5864556345856085 = -0.0016715548520932508`, i.e. a **-0.167% relative change** -- a
+real regression, not an improvement. In magnitude this is smaller than `snap_share`'s
+~0.6% ablation gain (the only other model-vs-model ablation percentage recorded in this
+file), and unlike `snap_share` it is negative: the extra per-(team, position_group)
+defense coefficients did not extract useful signal here and instead cost a small amount
+of fit quality, consistent with the overfitting risk flagged going into this ablation
+(far more coefficients than the single-scalar defense term, fit on the same walk-forward
+data). This result is not strong enough, on its own, to justify making
+`position_split_defense=True` the default for `CatchRate` -- it is a loss, not a
+marginal win, so per this project's gate discipline it does not ship. **Inert:** no CLI
+command reads either configuration of this model -- this ablation result alone does not
+change any live behavior.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+from nfl_props import data, catch_backtest
+
+games = data.load_games()
+pbp = data.load_pbp(seasons=3)
+stats = data.load_player_stats(seasons=3)
+targets = data.load_targets(pbp, stats, games)
+start = (targets['date'].max() - timedelta(days=365)).date()
+
+base = catch_backtest.walk_forward(targets, start, halflife_days=180.0, reg=5.0, min_targets=200)
+print('Base:', catch_backtest.summarize(base))
+
+split = catch_backtest.walk_forward(targets, start, halflife_days=180.0, reg=5.0, min_targets=200,
+                                    position_split_defense=True)
+print('+ position_split_defense:', catch_backtest.summarize(split))
+print(catch_backtest.calibration(split))
+"
+```
+
 ## Reproducing this baseline
 
 ```bash
