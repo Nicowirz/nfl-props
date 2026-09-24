@@ -503,6 +503,89 @@ print(yards_backtest.calibration(preds))
 "
 ```
 
+### position-split opponent-defense ablation
+
+**Commit:** `4c40b9d` (master). **Method:** same `yards_backtest.walk_forward()` setup as
+the base `Yards | Reception` section above, with one additional step:
+`position_split_defense=True`, per
+`docs/superpowers/plans/2026-09-24-nfl-props-yards-position-split-defense.md` -- the
+spec's own position-split yards-allowed-per-catch term. Base is re-run under the same
+commit/data window for a same-run, apples-to-apples comparison rather than reused from
+the prior section's recorded number.
+
+| Run | n | NLL model | NLL baseline |
+|---|---|---|---|
+| Base (single opponent scalar) | `11613` | `0.4988037610419862` | `0.5528300974432662` |
+| + position_split_defense | `11613` | `0.5009750302937114` | `0.5534564466519641` |
+
+Note: `NLL baseline` is **not** necessarily comparable across the two rows -- as both
+this file's `targets` and `CatchRate` ablation subsections above already establish for
+the identical reason, the baseline is derived from the model's own fitted
+position-group intercepts, which can shift between configurations. Only the model-vs-model
+`NLL model` comparison is a valid read here.
+
+Calibration under `+ position_split_defense` (PIT buckets, each should hold ~10% of
+predictions if well-calibrated):
+
+```
+                  n  mean_pit
+(-0.001, 0.1]   848  0.048375
+(0.1, 0.2]     1165  0.151432
+(0.2, 0.3]     1466  0.251518
+(0.3, 0.4]     1388  0.348681
+(0.4, 0.5]     1324  0.448626
+(0.5, 0.6]     1185  0.548111
+(0.6, 0.7]     1063  0.649905
+(0.7, 0.8]      996  0.749783
+(0.8, 0.9]      926  0.848765
+(0.9, 1.0]     1252  0.959133
+```
+
+**Read honestly:** Adding `position_split_defense` made NLL model *worse*, not better --
+it moved from 0.4988037610419862 (Base) to 0.5009750302937114 (+
+position_split_defense), a change of +0.002171269251725172 nats. Using the required
+formula, `(nll_model_base - nll_model_split) / nll_model_base = (0.4988037610419862 -
+0.5009750302937114) / 0.4988037610419862 = -0.004352952847006316`, i.e. a **-0.435%
+relative change** -- a real regression, not an improvement. In magnitude this loss is
+larger than `CatchRate`'s own position-split ablation loss (-0.167%) and runs the
+opposite direction from the `snap_share` ablation's gain (+~0.6%) -- the only other
+model-vs-model ablation percentages recorded in this file -- not to be confused with this
+section's own ~9.77% model-vs-baseline figure above, which measures a different thing.
+As with `CatchRate`, this configuration REPLACES the pooled team-level defense term
+entirely (there is no team-level defense term left when `position_split_defense=True` --
+each `(team, position_group)` cell is shrunk toward 0 independently, not toward a team
+mean), not merely augments it with a position-specific adjustment; a pooled-plus-
+interaction variant was not tested here and remains an open question. This result is not
+strong enough, on its own, to justify making `position_split_defense=True` the default
+for `Yards | Reception` -- it is a loss, not a marginal win, so per this project's gate
+discipline it does not ship. **Inert:** no CLI command reads either configuration of this
+model -- this ablation result alone does not change any live behavior.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+from nfl_props import data, yards_backtest
+
+games = data.load_games()
+pbp = data.load_pbp(seasons=3)
+stats = data.load_player_stats(seasons=3)
+targets = data.load_targets(pbp, stats, games)
+catches = targets[targets['complete'] == 1.0].copy()
+start = (catches['date'].max() - timedelta(days=365)).date()
+
+base = yards_backtest.walk_forward(catches, start, halflife_days=180.0, reg=5.0, min_catches=200)
+print('Base:', yards_backtest.summarize(base))
+
+split = yards_backtest.walk_forward(catches, start, halflife_days=180.0, reg=5.0, min_catches=200,
+                                    position_split_defense=True)
+print('+ position_split_defense:', yards_backtest.summarize(split))
+print(yards_backtest.calibration(split))
+"
+```
+
 ## Reproducing this baseline
 
 ```bash
