@@ -604,53 +604,50 @@ whether Stage 1's decomposition beats the existing model, not a shipping decisio
 | Model | n | MAE | RMSE |
 |---|---|---|---|
 | Composition (Targets x CatchRate x Yards\|Reception) | `4490` | `17.970320761320977` | `25.44482184833516` |
-| Existing direct model (median prediction) | `6387` | `13.463997241868164` | `22.288854954881792` |
+| Existing direct model, full population (median prediction) | `6387` | `13.463997241868164` | `22.288854954881792` |
+| Existing direct model, **matched subset** (same `4490` rows as composition -- apples-to-apples) | `4490` | `17.740159480038965` | `26.343101223202684` |
 
-**Read honestly:** The composition does NOT beat the existing direct model on MAE or on
-RMSE -- it loses on both, clearly. Composition MAE is 17.970320761320977 vs. the direct
-model's 13.463997241868164 (composition's error is 4.506323519452813 yds higher).
-Composition RMSE is 25.44482184833516 vs. the direct model's 22.288854954881792
-(composition's error is 3.1559668934533676 yds higher). Using the required formula,
-`(direct_mae - comp_mae) / direct_mae = (13.463997241868164 - 17.970320761320977) /
-13.463997241868164 = -0.33469432877182836`, i.e. the composition's MAE is **33.47%
-worse** (relatively) than the direct model's, not better. Likewise `(direct_rmse -
-comp_rmse) / direct_rmse = (22.288854954881792 - 25.44482184833516) / 22.288854954881792
-= -0.14159394458987834`, i.e. the composition's RMSE is **14.16% worse** (relatively)
-than the direct model's. This is a real, unambiguous loss on both metrics, not a mixed or
-partial result -- there is no framing under which the composed point estimate beats the
-model it was built to replace in this run. Quoting the spec's own gate directly: "If
-Model 6 doesn't beat Model 5 ... it is not shipped." This result, on its own, **fails**
-that gate -- the composition is not Model 6 in the spec's numbering, but the same
-discipline applies identically: a composed estimate that loses to the model it was meant
-to replace does not ship, and nothing here suggests otherwise. (Note for the reader: this
-stage validates the POINT ESTIMATE only, not the full NLL/calibration criteria the spec's
-gate literally names for the eventual full Monte Carlo model -- MAE/RMSE is the honest
-analog available at this stage, not a substitute for the real gate check the full Monte
-Carlo plan will need to run; a point-estimate loss of this size makes it very unlikely
-that the fuller criteria would reverse the verdict, but that check was not run here.)
+**Correction (post-review):** the first version of this section compared the composition
+(`n=4490`) against the direct model's **full-population** numbers (`n=6387`) and called
+that an "unambiguous loss." That framing was wrong -- it compared two different
+populations. The `1897`-row gap is not a random subsample: **100% of the skipped rows
+have `targets == 0` in that specific game** (the player was on the field/roster for a
+game where the offense simply never threw to him -- a run-heavy or game-script-driven
+week, unrelated to career history or experience; the original write-up's claim that these
+were disproportionately "rookies, first appearances, low-usage players" was not checked
+against the data and is not correct), and **99.89% of those rows have `actual_yards == 0`**
+(mean `0.009488666315234581` -- essentially always exactly zero). The direct model's own
+MAE on just that skipped slice alone is `3.3427698041312643` -- a near-free,
+trivially-predictable slice that pulls its full-population average down relative to what
+it actually achieves on the harder population the composition was scored on. Restricting
+the direct model to the *same* `4490` `(player_id, date)` rows the composition faced (no
+free zero-target games on either side) gives the row above: MAE `17.740159480038965`,
+RMSE `26.343101223202684` -- this matched-subset row, not the full-population row, is the
+honest apples-to-apples comparison and the one the "Read honestly" paragraph below is
+based on. The full-population row is kept in the table above for transparency but should
+**not** be read as the composition's real relative performance.
 
-`n` differs meaningfully between the two rows: composition `n=4490` vs. direct model
-`n=6387`, a difference of exactly `1897` -- which equals the real
-`skipped_no_air_yards` count from Step 1 verbatim (`1897` of the `6387` relevant
-player-games in the window, **29.70%**, had no prior target history and therefore no
-safe `trailing_air_yards` value, so the composition skipped them per `composition.py`'s
-own no-fallback design; the direct model's `backtest.walk_forward()` scored all `6387`).
-This is a real, uncontrolled difference in the two rows' populations, not merely a
-technicality: the skipped rows are disproportionately players with little or no prior
-target history (rookies, first appearances, low-usage players), who plausibly have lower,
-less variable `receiving_yards` outcomes that a season-to-date-style direct model can
-predict cheaply -- if so, their presence in the direct model's `n=6387` but absence from
-the composition's `n=4490` could inflate the apparent gap between the two models to some
-unknown degree in the direct model's favor. This script did not re-run the direct model
-restricted to the same `4490`-row subset the composition scored, so this possibility is
-not resolved here and is flagged as an open limitation of this comparison, not something
-to wave away. That said, the size of the observed gap -- a 33.47% relative MAE loss and a
-14.16% relative RMSE loss -- is large enough that a same-`n` re-run explaining away the
-entire result would require the skipped population to be carrying an unusually large
-share of the direct model's apparent advantage; nothing in this run establishes that it
-does, and the honest reading is that the composition currently underperforms the direct
-model on real data, gate discipline says it is not shipped, and the population-mismatch
-caveat is a real question for the next check, not a way to discount the loss.
+**Read honestly:** On the matched subset (`n=4490` on both sides), this is a genuine
+**mixed result**, not a clean win or a clean loss. Composition MAE `17.970320761320977`
+vs. direct model (matched) MAE `17.740159480038965`: `(dm_mae - comp_mae) / dm_mae =
+(17.740159480038965 - 17.970320761320977) / 17.740159480038965 = -0.012974025489510774`,
+i.e. the composition's MAE is **1.30% worse** (relatively) -- a narrow loss, close to a
+statistical tie given the size of this window. Composition RMSE `25.44482184833516` vs.
+direct model (matched) RMSE `26.343101223202684`: `(dm_rmse - comp_rmse) / dm_rmse =
+(26.343101223202684 - 25.44482184833516) / 26.343101223202684 = 0.03409922648273206`,
+i.e. the composition's RMSE is **3.41% better** (relatively) -- a real win on this metric.
+So: the composition narrowly loses MAE and wins RMSE against the model it was built to
+replace, once both are scored on the identical population. Quoting the spec's own gate
+directly: "If Model 6 doesn't beat Model 5 ... it is not shipped." This mixed result does
+**not cleanly pass** that gate -- it does not beat the direct model on both metrics -- but
+it is a materially different, and much closer, result than the original write-up's false
+"unambiguous loss, no winning framing" claim; there **is** a real framing (RMSE, on the
+matched subset) under which the composition wins. (Note for the reader: this stage
+validates the POINT ESTIMATE only, not the full NLL/calibration criteria the spec's gate
+literally names for the eventual full Monte Carlo model -- MAE/RMSE is the honest analog
+available at this stage, not a substitute for the real gate check the full Monte Carlo
+plan will need to run. A near-tie-on-MAE/win-on-RMSE point-estimate result is genuinely
+ambiguous input for that later decision, not a clear green light or a clear stop.)
 
 **Reproducing this result:**
 
@@ -700,7 +697,7 @@ for _, g in relevant.iterrows():
     point_est = composition.predicted_rec_yds_point_estimate(
         rate_r, catch_r, yards_r, g['player_id'], g['position_group'], g['opponent_team'],
         bool(g['home']), trailing_air_yards=float(ay), trailing_share=g.get('trailing_share'))
-    rows.append({'actual': g['receiving_yards'], 'point_est': point_est})
+    rows.append({'actual': g['receiving_yards'], 'point_est': point_est, 'player_id': g['player_id'], 'date': g['date']})
 
 comp_df = pd.DataFrame(rows)
 comp_mae = float(np.mean(np.abs(comp_df['actual'] - comp_df['point_est'])))
@@ -709,9 +706,21 @@ print('Composition:', {'n': len(comp_df), 'skipped_no_air_yards': skipped_no_air
 
 direct_preds = backtest.walk_forward(stats, 'rec_yds', start, halflife_days=180.0, reg=5.0, min_games=200)
 direct_median = np.exp(direct_preds['model_mu']) - model.OFFSET
-direct_mae = float(np.mean(np.abs(direct_preds['actual_yards'] - direct_median)))
-direct_rmse = float(np.sqrt(np.mean((direct_preds['actual_yards'] - direct_median) ** 2)))
-print('Direct model (median):', {'n': len(direct_preds), 'MAE': direct_mae, 'RMSE': direct_rmse})
+direct_preds = direct_preds.assign(direct_median=direct_median)
+direct_mae = float(np.mean(np.abs(direct_preds['actual_yards'] - direct_preds['direct_median'])))
+direct_rmse = float(np.sqrt(np.mean((direct_preds['actual_yards'] - direct_preds['direct_median']) ** 2)))
+print('Direct model (full population):', {'n': len(direct_preds), 'MAE': direct_mae, 'RMSE': direct_rmse})
+
+# Matched-subset comparison (the honest apples-to-apples read): restrict the direct
+# model's own already-computed predictions to the SAME (player_id, date) rows the
+# composition was actually scored on, since the full population above includes 1897
+# zero-target-that-game rows the composition skipped (no trailing_air_yards) that are
+# trivially easy for the direct model (actual_yards == 0 for 99.89% of them).
+comp_keys = comp_df[['player_id', 'date']].drop_duplicates()
+matched = direct_preds.merge(comp_keys, on=['player_id', 'date'], how='inner')
+matched_mae = float(np.mean(np.abs(matched['actual_yards'] - matched['direct_median'])))
+matched_rmse = float(np.sqrt(np.mean((matched['actual_yards'] - matched['direct_median']) ** 2)))
+print('Direct model (matched subset):', {'n': len(matched), 'MAE': matched_mae, 'RMSE': matched_rmse})
 "
 ```
 
