@@ -423,6 +423,86 @@ print(catch_backtest.calibration(split))
 "
 ```
 
+## Yards | Reception (first validation)
+
+**Commit:** `4db3b1e` (master). **Data window:** 3 seasons of real nflverse data, 1-year
+walk-forward lookback anchored to the most recent date among COMPLETED targets
+(`data.load_targets()`'s output filtered to `complete == 1`) at run time, run 2026-09-23.
+**Method:** `yards_backtest.walk_forward()` -- true walk-forward, refit every `(season,
+week)` using only data strictly before that date, scored against a per-player
+season-to-date-average log-yards baseline (falling back to the fitted model's own
+position-group base rate for a player with no prior catches that season). Model:
+`yards_model.fit_yards_per_catch()`'s new log-normal ridge fit (player ability + opponent
+defense + home field), one row per COMPLETED catch rather than per player-game, built in
+`docs/superpowers/plans/2026-09-23-nfl-props-yards-per-reception-model.md`. This predicts
+a DIFFERENT quantity than the `rec_yds` section above (yards on ONE catch, not total game
+yards) -- the two NLL numbers are not comparable to each other. **Inert:** no CLI command
+(`predict`/`parlay`/`best-bet`/`fantasy-predict`) reads this model -- this is a research
+checkpoint, not a shipping decision.
+
+| Metric | Value |
+|---|---|
+| NLL (model / baseline) | 0.4988037610419862 / 0.5528300974432662 |
+| n | 11613 |
+
+Calibration (PIT buckets, each should hold ~10% of predictions if well-calibrated):
+
+```
+                  n  mean_pit
+(-0.001, 0.1]   840  0.048694
+(0.1, 0.2]     1135  0.151657
+(0.2, 0.3]     1483  0.250104
+(0.3, 0.4]     1393  0.348460
+(0.4, 0.5]     1345  0.448341
+(0.5, 0.6]     1199  0.549150
+(0.6, 0.7]     1020  0.648751
+(0.7, 0.8]     1020  0.749349
+(0.8, 0.9]      928  0.847431
+(0.9, 1.0]     1250  0.958758
+```
+
+**Read honestly:** The model beats the naive per-player season-to-date-average baseline
+by 0.05402633640127996 nats (0.5528300974432662 - 0.4988037610419862 =
+0.05402633640127996), a ~9.77% relative NLL improvement ((0.5528300974432662 -
+0.4988037610419862) / 0.5528300974432662 = 0.09772683623981666). This is a real win, and
+by this file's own comparison standard it lands as the second-strongest first-validation
+model-vs-baseline result recorded here: below `CatchRate`'s ~10.32% but above `targets`'
+~7.7% and far above `team pass volume`'s ~0.76% -- all model-vs-baseline NLL comparisons
+(not covariate-ablation percentages like `snap_share`'s ~0.6% or the position-split
+ablation's -0.167%, which measure a different thing, model-vs-model). Calibration is not
+uniform: the bottom decile, `(-0.001, 0.1]` (n=840 of 11613, 7.23% of all predictions vs.
+the ~10% target), is meaningfully under-filled -- fewer catches land in the model's
+lowest-PIT bucket than a well-calibrated model would produce. The top decile, `(0.9,
+1.0]` (n=1250, 10.76% of all predictions), tracks the ~10% target closely. The middle of
+the table shows real but modest drift in both directions: `(0.2, 0.3]` (n=1483, 12.77%)
+and `(0.3, 0.4]` (n=1393, 12.00%) both run above the 10% target, while `(0.6, 0.7]` and
+`(0.7, 0.8]` (n=1020 each, 8.78%) and `(0.8, 0.9]` (n=928, 7.99%) all run below it. Net:
+the model wins clearly on NLL, by a margin in line with this file's other strong
+first-validation results, but calibration diverges from uniform in the bottom decile and
+across the 0.2-0.9 middle buckets -- a real, sample-size-backed pattern worth
+investigating in a future pass, not evidence the model is broken given the clear NLL win.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+from nfl_props import data, yards_backtest
+
+games = data.load_games()
+pbp = data.load_pbp(seasons=3)
+stats = data.load_player_stats(seasons=3)
+targets = data.load_targets(pbp, stats, games)
+catches = targets[targets['complete'] == 1.0].copy()
+start = (catches['date'].max() - timedelta(days=365)).date()
+
+preds = yards_backtest.walk_forward(catches, start, halflife_days=180.0, reg=5.0, min_catches=200)
+print(yards_backtest.summarize(preds))
+print(yards_backtest.calibration(preds))
+"
+```
+
 ## Reproducing this baseline
 
 ```bash
