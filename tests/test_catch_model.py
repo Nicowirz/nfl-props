@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from nfl_props import catch_model
 
@@ -192,6 +193,8 @@ def test_fit_catch_rate_position_split_defense_off_matches_current_behavior_exac
     assert r_default.defense == r_explicit.defense
     assert r_default.home_field == r_explicit.home_field
     assert r_default.air_yards_coef == r_explicit.air_yards_coef
+    assert r_explicit.home_field == pytest.approx(0.050273538721215434, abs=1e-9)
+    assert r_explicit.air_yards_coef == pytest.approx(-0.08353728974847077, abs=1e-9)
     assert r_explicit.defense_position is None
     assert r_explicit.defense != {}
 
@@ -215,3 +218,40 @@ def test_predicted_catch_rate_position_split_falls_back_for_unseen_combo():
     # neutral (0.0) defense contribution rather than crashing on a missing key.
     p = catch_model.predicted_catch_rate(r, pid, "QB", "T0", True, air_yards=8.0)
     assert 0.0 < p < 1.0
+
+
+def test_predicted_catch_rate_position_split_applies_seen_combo_interaction_coefficient():
+    """Regression guard for the exact seam a final-review mutation experiment proved
+    untested: predicted_catch_rate's split-mode lookup key order. Confirms a SEEN
+    (opponent_team, position_group) combo's real defense_position coefficient is
+    actually applied -- not silently falling back to 0.0 -- by reconstructing eta by
+    hand and comparing, and by confirming predictions for the same player/opponent
+    genuinely differ across position groups with different true defense effects (the
+    _synthetic_split fixture's true_defense values are NOT equal across positions for
+    the same team, by construction).
+    """
+    df, true_defense, true_coef = _synthetic_split()
+    r = catch_model.fit_catch_rate(df, reg=0.5, halflife_days=100_000, min_targets=100,
+                                   position_split_defense=True)
+    pid = df["player_id"].iloc[0]
+    team, opp = df["team"].iloc[0], "T0"
+    for pos in ["WR", "TE", "RB"]:
+        combo = (opp, pos)
+        assert combo in r.defense_position, f"expected {combo} to be a seen combo in this fixture"
+    predictions = {
+        pos: catch_model.predicted_catch_rate(r, pid, pos, opp, True, air_yards=8.0)
+        for pos in ["WR", "TE", "RB"]
+    }
+    # manually reconstruct eta for WR using the fitted defense_position coefficient,
+    # and confirm it matches predicted_catch_rate's own output exactly -- proves the
+    # coefficient is genuinely read, not silently defaulted to 0.0.
+    ability = r.ability.get(pid, 0.0)
+    intercept = r.position_intercept.get("WR", r.intercept_fallback)
+    defense = r.defense_position[(opp, "WR")]
+    manual_eta = intercept + ability + defense + r.home_field + r.air_yards_coef * 8.0
+    manual_p = 1.0 / (1.0 + np.exp(-manual_eta))
+    assert abs(predictions["WR"] - manual_p) < 1e-9
+    # a defense contribution of exactly 0.0 (the unseen-combo fallback value) would
+    # make all three predictions identical -- confirm they are NOT all equal, proving
+    # each position's own real interaction coefficient is genuinely applied.
+    assert len(set(round(p, 6) for p in predictions.values())) > 1

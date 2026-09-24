@@ -383,13 +383,21 @@ real regression, not an improvement. In magnitude this is smaller than `snap_sha
 ~0.6% ablation gain (the only other model-vs-model ablation percentage recorded in this
 file), and unlike `snap_share` it is negative: the extra per-(team, position_group)
 defense coefficients did not extract useful signal here and instead cost a small amount
-of fit quality, consistent with the overfitting risk flagged going into this ablation
+of fit quality, consistent with the dimensionality increase this ablation introduces
 (far more coefficients than the single-scalar defense term, fit on the same walk-forward
-data). This result is not strong enough, on its own, to justify making
-`position_split_defense=True` the default for `CatchRate` -- it is a loss, not a
-marginal win, so per this project's gate discipline it does not ship. **Inert:** no CLI
-command reads either configuration of this model -- this ablation result alone does not
-change any live behavior.
+data). Note also that this configuration REPLACES the pooled team-level defense term
+entirely (there is no team-level defense term left when `position_split_defense=True` --
+each `(team, position)` cell is shrunk toward 0 independently, not toward a team mean),
+not merely augments it with a position-specific adjustment; a pooled-plus-interaction
+variant was not tested here and remains an open question. This result is not strong
+enough, on its own, to justify making `position_split_defense=True` the default for
+`CatchRate` -- it is a loss, not a marginal win, so per this project's gate discipline it
+does not ship. The calibration table also shows a small corroborating signal: the
+`(0.1, 0.2]` bin's underprediction gap widens from +0.100 in the base run (predicted
+0.164089 vs. actual 0.264317) to +0.119 here (predicted 0.163567 vs. actual 0.282511),
+consistent with the split configuration's NLL loss rather than contradicting it.
+**Inert:** no CLI command reads either configuration of this model -- this ablation
+result alone does not change any live behavior.
 
 **Reproducing this result:**
 

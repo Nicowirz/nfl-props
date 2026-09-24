@@ -12,10 +12,13 @@ module fits exactly one outcome -- Stage 1 has exactly one CatchRate market -- s
 follows game_model.py's dedicated-function convention (fit_margin/fit_score/
 fit_pass_volume) rather than rate_model.py's generic-over-`stat` one.
 
-The opponent-defense term here is a single scalar per team, not position-split -- this
-is Stage 1's first validated slice of CatchRate. A position-split opponent term
-(completion-rate-allowed-to-WR vs. -TE vs. -RB) is the spec's own next ablation stage,
-deliberately deferred to a follow-on plan once this base model is validated.
+The opponent-defense term defaults to a single scalar per team, not position-split --
+Stage 1's first validated slice of CatchRate. An optional position-split variant
+(completion-rate-allowed-to-WR vs. -TE vs. -RB, via `position_split_defense=True`) was
+added and real-data ablation-tested in
+docs/superpowers/plans/2026-09-23-nfl-props-catch-rate-position-split-defense.md -- the
+result was a small real loss (-0.167% relative NLL, see BASELINE.md), so it is NOT the
+default and has not been made one.
 """
 from __future__ import annotations
 
@@ -50,7 +53,6 @@ class CatchRatings:
     ability: dict[str, float]
     teams: list[str]
     defense: dict[str, float]
-    defense_position: dict[tuple[str, str], float] | None
     position_intercept: dict[str, float]
     intercept_fallback: float
     air_yards_coef: float
@@ -59,6 +61,7 @@ class CatchRatings:
     n_targets: int
     target_counts: dict[str, int]
     prior_players: list[str] = field(default_factory=list)
+    defense_position: dict[tuple[str, str], float] | None = None
 
     def table(self) -> pd.DataFrame:
         rows = [{
