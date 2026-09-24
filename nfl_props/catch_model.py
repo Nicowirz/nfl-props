@@ -50,6 +50,7 @@ class CatchRatings:
     ability: dict[str, float]
     teams: list[str]
     defense: dict[str, float]
+    defense_position: dict[tuple[str, str], float] | None
     position_intercept: dict[str, float]
     intercept_fallback: float
     air_yards_coef: float
@@ -71,11 +72,24 @@ class CatchRatings:
 
 
 def fit_catch_rate(targets: pd.DataFrame, as_of: date | None = None, halflife_days: float = 180.0,
-                   reg: float = 5.0, min_targets: int = 200) -> CatchRatings:
+                   reg: float = 5.0, min_targets: int = 200,
+                   position_split_defense: bool = False) -> CatchRatings:
     """Fit on every target row from a relevant position, strictly before `as_of` (default:
     all rows). Unlike rate_model.fit_poisson, there is no qualifying-games threshold here
     to further restrict the fitted population -- every row IS already an individual
     Bernoulli trial, not a player-game aggregate that needs a volume floor.
+
+    position_split_defense=False (default): opponent defense is a single scalar per team,
+    matching Stage 1's first validated slice (see BASELINE.md's "CatchRate | Targets
+    (first validation)" section) -- this path is byte-identical to that already-shipped
+    behavior. position_split_defense=True: opponent defense becomes one coefficient per
+    observed (opponent_team, position_group) combination -- a direct team-x-position
+    INTERACTION, not team_effect + position_effect added together -- capturing "how this
+    specific defense performs against this specific position" (spec's own audit: a
+    bend-don't-break defense and a boom-or-bust defense look identical under the
+    single-scalar design). This is the spec's own next Stage 1 ablation step
+    (`## Ablation plan`), validated in
+    docs/superpowers/plans/2026-09-23-nfl-props-catch-rate-position-split-defense.md.
     """
     df = targets
     if as_of is not None:
@@ -98,19 +112,35 @@ def fit_catch_rate(targets: pd.DataFrame, as_of: date | None = None, halflife_da
     days_ago = (pd.Timestamp(as_of) - df["date"]).dt.days.to_numpy(dtype=float)
     w = 0.5 ** (days_ago / halflife_days)
 
-    X = np.zeros((n, n_g + 1 + n_p + n_t + 1))
-    gi = df["position_group"].map(gidx).to_numpy()
-    X[np.arange(n), gi] = 1.0
-    X[:, n_g] = df["home"].to_numpy(dtype=float)
-    pi = df["player_id"].map(pidx).to_numpy()
-    ti = df["opponent_team"].map(tidx).to_numpy()
-    X[np.arange(n), n_g + 1 + pi] = 1.0
-    X[np.arange(n), n_g + 1 + n_p + ti] = 1.0
-    X[:, n_g + 1 + n_p + n_t] = df["air_yards"].to_numpy(dtype=float)
-
-    penalty = np.zeros(X.shape[1])
-    penalty[:n_g] = model.GROUP_INTERCEPT_REG
-    penalty[n_g + 1:n_g + 1 + n_p + n_t] = reg
+    if position_split_defense:
+        combos = sorted(set(zip(df["opponent_team"], df["position_group"])))
+        cidx = {c: i for i, c in enumerate(combos)}
+        n_c = len(combos)
+        X = np.zeros((n, n_g + 1 + n_p + n_c + 1))
+        gi = df["position_group"].map(gidx).to_numpy()
+        X[np.arange(n), gi] = 1.0
+        X[:, n_g] = df["home"].to_numpy(dtype=float)
+        pi = df["player_id"].map(pidx).to_numpy()
+        ci = np.array([cidx[(t, g)] for t, g in zip(df["opponent_team"], df["position_group"])])
+        X[np.arange(n), n_g + 1 + pi] = 1.0
+        X[np.arange(n), n_g + 1 + n_p + ci] = 1.0
+        X[:, n_g + 1 + n_p + n_c] = df["air_yards"].to_numpy(dtype=float)
+        penalty = np.zeros(X.shape[1])
+        penalty[:n_g] = model.GROUP_INTERCEPT_REG
+        penalty[n_g + 1:n_g + 1 + n_p + n_c] = reg
+    else:
+        X = np.zeros((n, n_g + 1 + n_p + n_t + 1))
+        gi = df["position_group"].map(gidx).to_numpy()
+        X[np.arange(n), gi] = 1.0
+        X[:, n_g] = df["home"].to_numpy(dtype=float)
+        pi = df["player_id"].map(pidx).to_numpy()
+        ti = df["opponent_team"].map(tidx).to_numpy()
+        X[np.arange(n), n_g + 1 + pi] = 1.0
+        X[np.arange(n), n_g + 1 + n_p + ti] = 1.0
+        X[:, n_g + 1 + n_p + n_t] = df["air_yards"].to_numpy(dtype=float)
+        penalty = np.zeros(X.shape[1])
+        penalty[:n_g] = model.GROUP_INTERCEPT_REG
+        penalty[n_g + 1:n_g + 1 + n_p + n_t] = reg
 
     beta = np.zeros(X.shape[1])
 
@@ -131,8 +161,14 @@ def fit_catch_rate(targets: pd.DataFrame, as_of: date | None = None, halflife_da
     position_intercept = {g: float(beta[i]) for g, i in gidx.items()}
     home_field = float(beta[n_g])
     ability = {p: float(beta[n_g + 1 + i]) for p, i in pidx.items()}
-    defense = {t: float(beta[n_g + 1 + n_p + i]) for t, i in tidx.items()}
-    air_yards_coef = float(beta[n_g + 1 + n_p + n_t])
+    if position_split_defense:
+        defense: dict[str, float] = {}
+        defense_position = {c: float(beta[n_g + 1 + n_p + i]) for c, i in cidx.items()}
+        air_yards_coef = float(beta[n_g + 1 + n_p + n_c])
+    else:
+        defense = {t: float(beta[n_g + 1 + n_p + i]) for t, i in tidx.items()}
+        defense_position = None
+        air_yards_coef = float(beta[n_g + 1 + n_p + n_t])
     group_counts = df["position_group"].value_counts().to_dict()
     intercept_fallback = float(np.average([position_intercept[g] for g in groups],
                                           weights=[group_counts[g] for g in groups]))
@@ -143,7 +179,7 @@ def fit_catch_rate(targets: pd.DataFrame, as_of: date | None = None, halflife_da
 
     return CatchRatings(
         players=players, player_name=player_name, position_group=position_group,
-        ability=ability, teams=teams, defense=defense,
+        ability=ability, teams=teams, defense=defense, defense_position=defense_position,
         position_intercept=position_intercept, intercept_fallback=intercept_fallback,
         air_yards_coef=air_yards_coef, home_field=home_field,
         as_of=as_of, n_targets=n, target_counts=target_counts,
@@ -153,14 +189,20 @@ def fit_catch_rate(targets: pd.DataFrame, as_of: date | None = None, halflife_da
 def predicted_catch_rate(r: CatchRatings, player_id: str, position_group: str, opponent_team: str,
                          home: bool, air_yards: float) -> float:
     """Probability the target is caught. Same unknown-player/unknown-group fallback
-    treatment as rate_model.predicted_rate/model.predicted_distribution.
+    treatment as rate_model.predicted_rate/model.predicted_distribution. When `r` was fit
+    with position_split_defense=True, an unseen (opponent_team, position_group) combo
+    falls back to a neutral 0.0 defense contribution, same fallback value as the
+    non-split path's unseen-team case.
     """
     ability = r.ability.get(player_id)
     if ability is None:
         ability = 0.0
         if player_id not in r.prior_players:
             r.prior_players.append(player_id)
-    defense = r.defense.get(opponent_team, 0.0)
+    if r.defense_position is not None:
+        defense = r.defense_position.get((opponent_team, position_group), 0.0)
+    else:
+        defense = r.defense.get(opponent_team, 0.0)
     intercept = r.position_intercept.get(position_group, r.intercept_fallback)
     eta = (intercept + ability + defense + (r.home_field if home else 0.0)
           + r.air_yards_coef * air_yards)

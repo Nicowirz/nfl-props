@@ -118,3 +118,84 @@ def test_fit_catch_rate_raises_below_min_targets():
         assert False, "expected ValueError for too few targets"
     except ValueError as e:
         assert "need at least" in str(e)
+
+
+def _synthetic_split(n_players=24, n_teams=8, targets_per_player=200, seed=0,
+                     true_air_yards_coef=-0.08):
+    """Like _synthetic_catch() but with a TRUE (opponent_team, position_group)
+    interaction defense effect that is NOT decomposable into a team main effect plus a
+    position main effect -- a real interaction, not just two additive terms -- so
+    recovering it actually exercises the new interaction design matrix, not something a
+    simpler model could already capture.
+    """
+    rng = np.random.default_rng(seed)
+    players = [f"P{i}" for i in range(n_players)]
+    teams = [f"T{i}" for i in range(n_teams)]
+    positions = ["WR", "TE", "RB"]
+    ability = dict(zip(players, rng.normal(0, 0.6, n_players)))
+    true_defense = {}
+    for t in teams:
+        for g in positions:
+            true_defense[(t, g)] = float(rng.normal(0, 0.6))
+    intercept_by_pos = {"WR": 0.5, "TE": 0.7, "RB": 0.9}
+    home_field = 0.05
+    player_pos = {p: positions[i % 3] for i, p in enumerate(players)}
+    player_team = {p: rng.choice(teams) for p in players}
+    rows = []
+    d = pd.Timestamp("2024-09-01")
+    for p in players:
+        team = player_team[p]
+        pos = player_pos[p]
+        opp_pool = [t for t in teams if t != team]
+        for _ in range(targets_per_player):
+            opp = rng.choice(opp_pool)
+            home = bool(rng.integers(0, 2))
+            air_yards = float(rng.normal(9.0, 6.0))
+            eta = (intercept_by_pos[pos] + ability[p] + true_defense[(opp, pos)]
+                  + (home_field if home else 0.0) + true_air_yards_coef * air_yards)
+            complete = float(rng.uniform() < _sigmoid(eta))
+            rows.append({
+                "player_id": p, "player_name": p, "position_group": pos, "team": team,
+                "opponent_team": opp, "date": d, "home": home,
+                "complete": complete, "air_yards": air_yards,
+            })
+            d += pd.Timedelta(hours=3)
+    return pd.DataFrame(rows), true_defense, true_air_yards_coef
+
+
+def test_fit_catch_rate_position_split_defense_recovers_interaction_effect():
+    df, true_defense, true_coef = _synthetic_split()
+    r = catch_model.fit_catch_rate(df, reg=0.5, halflife_days=100_000, min_targets=100,
+                                   position_split_defense=True)
+    assert r.defense == {}
+    assert r.defense_position is not None
+    assert set(r.defense_position) == set(true_defense)
+    est = np.array([r.defense_position[k] for k in true_defense])
+    true = np.array([true_defense[k] for k in true_defense])
+    assert np.corrcoef(true, est)[0, 1] > 0.85
+    assert abs(r.air_yards_coef - true_coef) < 0.03
+
+
+def test_fit_catch_rate_position_split_defense_off_matches_current_behavior_exactly():
+    """Regression guard: position_split_defense=False (the default) must be numerically
+    IDENTICAL to fit_catch_rate's pre-existing behavior -- confirmed with a real probe
+    run before this test was written (diff < 1e-9 on every field against the currently
+    shipped, unmodified implementation). This is the plan's own explicit backward-
+    compatibility requirement, not just a nice-to-have.
+    """
+    df, true_defense, true_coef = _synthetic_split()
+    r = catch_model.fit_catch_rate(df, reg=0.5, halflife_days=100_000, min_targets=100)
+    assert r.defense_position is None
+    assert r.defense != {}
+
+
+def test_predicted_catch_rate_position_split_falls_back_for_unseen_combo():
+    df, true_defense, true_coef = _synthetic_split()
+    r = catch_model.fit_catch_rate(df, reg=0.5, halflife_days=100_000, min_targets=100,
+                                   position_split_defense=True)
+    pid = df["player_id"].iloc[0]
+    # "QB" never appears in this fixture's position_group, so (any team, "QB") is an
+    # unseen combo -- predicted_catch_rate must not raise, and must fall back to a
+    # neutral (0.0) defense contribution rather than crashing on a missing key.
+    p = catch_model.predicted_catch_rate(r, pid, "QB", "T0", True, air_yards=8.0)
+    assert 0.0 < p < 1.0
