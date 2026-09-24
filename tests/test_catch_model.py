@@ -178,15 +178,31 @@ def test_fit_catch_rate_position_split_defense_recovers_interaction_effect():
 
 def test_fit_catch_rate_position_split_defense_off_matches_current_behavior_exactly():
     """Regression guard: position_split_defense=False (the default) must be numerically
-    IDENTICAL to fit_catch_rate's pre-existing behavior -- confirmed with a real probe
-    run before this test was written (diff < 1e-9 on every field against the currently
-    shipped, unmodified implementation). This is the plan's own explicit backward-
-    compatibility requirement, not just a nice-to-have.
+    IDENTICAL to fit_catch_rate's pre-existing behavior. Confirms (a) omitting the
+    parameter entirely is identical to passing False explicitly, and (b) real recovery
+    quality against the EXISTING _synthetic_catch fixture's known true parameters (the
+    same fixture test_fit_catch_rate_recovers_ability_defense_and_air_yards_coef already
+    trusts) -- not just a tautological "defense_position is None" check.
     """
-    df, true_defense, true_coef = _synthetic_split()
-    r = catch_model.fit_catch_rate(df, reg=0.5, halflife_days=100_000, min_targets=100)
-    assert r.defense_position is None
-    assert r.defense != {}
+    df, players, teams, ability, defense, intercept, home_field, true_coef = _synthetic_catch()
+    r_default = catch_model.fit_catch_rate(df, reg=0.1, halflife_days=100_000, min_targets=100)
+    r_explicit = catch_model.fit_catch_rate(df, reg=0.1, halflife_days=100_000, min_targets=100,
+                                            position_split_defense=False)
+    assert r_default.ability == r_explicit.ability
+    assert r_default.defense == r_explicit.defense
+    assert r_default.home_field == r_explicit.home_field
+    assert r_default.air_yards_coef == r_explicit.air_yards_coef
+    assert r_explicit.defense_position is None
+    assert r_explicit.defense != {}
+
+    est_ability = np.array([r_explicit.ability[p] for p in players])
+    true_ability = np.array([ability[p] for p in players])
+    est_defense = np.array([r_explicit.defense[t] for t in teams])
+    true_defense = np.array([defense[t] for t in teams])
+    assert np.corrcoef(true_ability, est_ability)[0, 1] > 0.85
+    assert np.corrcoef(true_defense, est_defense)[0, 1] > 0.9
+    assert abs(r_explicit.home_field - home_field) < 0.1
+    assert abs(r_explicit.air_yards_coef - true_coef) < 0.03
 
 
 def test_predicted_catch_rate_position_split_falls_back_for_unseen_combo():
