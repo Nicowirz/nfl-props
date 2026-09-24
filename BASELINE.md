@@ -518,9 +518,9 @@ the prior section's recorded number.
 | Base (single opponent scalar) | `11613` | `0.4988037610419862` | `0.5528300974432662` |
 | + position_split_defense | `11613` | `0.5009750302937114` | `0.5534564466519641` |
 
-Note: `NLL baseline` is **not** necessarily comparable across the two rows -- as both
-this file's `targets` and `CatchRate` ablation subsections above already establish for
-the identical reason, the baseline is derived from the model's own fitted
+Note: `NLL baseline` is **not** necessarily comparable across the two rows -- as both the
+`snap_share ablation` and `CatchRate` position-split ablation subsections above already
+establish for the identical reason, the baseline is derived from the model's own fitted
 position-group intercepts, which can shift between configurations. Only the model-vs-model
 `NLL model` comparison is a valid read here.
 

@@ -7,13 +7,13 @@ fit), and Stage 1's eventual Monte Carlo composition needs this per-catch distri
 a separate factor (Targets x CatchRate x Yards|Reception), not a replacement for
 rec_yds.
 
-This is the BASE slice of Yards|Reception -- opponent defense stays a single scalar per
-team (mirroring model.py's existing convention), not yet the spec's position-split
-yards-allowed-per-catch variant -- deliberately staged the same way CatchRate's own
-position-split term was: validate the base per-catch refit first, ablation-test
-position-split separately once this is validated, per this project's "validate before
-extending" discipline. CatchRate's own position-split ablation already came back a real
-loss (see BASELINE.md), so there is no presumption position-split will help here either.
+The opponent-defense term defaults to a single scalar per team, not position-split --
+this model's first validated slice. An optional position-split variant
+(yards-allowed-per-catch by opponent x position, via `position_split_defense=True`) was
+added and real-data ablation-tested in
+docs/superpowers/plans/2026-09-24-nfl-props-yards-position-split-defense.md -- the
+result was a real loss (-0.435% relative NLL, see BASELINE.md), so it is NOT the
+default and has not been made one.
 
 No sigma_low_sample/WIDE_SIGMA_STATS/share_coef machinery is ported from model.py's
 generic-over-stat Ratings -- none of it applies to a brand-new per-catch model with no
