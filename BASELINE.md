@@ -586,6 +586,135 @@ print(yards_backtest.calibration(split))
 "
 ```
 
+## rec_yds point-estimate composition (first validation)
+
+**Commit:** `4c995a6` (master). **Data window:** 3 seasons of real nflverse data, 1-year
+walk-forward lookback, run 2026-09-24. **Method:** a one-off script (not a reusable backtest module --
+matching this file's own "Reproducing this baseline" precedent for MAE/RMSE-style
+metrics) refitting `rate_model`/`catch_model`/`yards_model` weekly and composing
+`composition.predicted_rec_yds_point_estimate()` for every real WR/TE/RB/QB player-game
+in the window, scored by MAE/RMSE against real actual `receiving_yards` -- compared, in
+the SAME script and window, against `model.py`'s existing direct `rec_yds` fit (its
+median prediction, `exp(model_mu) - OFFSET`, via `backtest.walk_forward()`), per the
+spec's own "Baselines to compare against" items 3 and 5. Built in
+`docs/superpowers/plans/2026-09-24-nfl-props-rec-yards-point-estimate-composition.md`.
+**Inert:** no CLI command reads this composition -- this is a research checkpoint on
+whether Stage 1's decomposition beats the existing model, not a shipping decision.
+
+| Model | n | MAE | RMSE |
+|---|---|---|---|
+| Composition (Targets x CatchRate x Yards\|Reception) | `4490` | `17.970320761320977` | `25.44482184833516` |
+| Existing direct model (median prediction) | `6387` | `13.463997241868164` | `22.288854954881792` |
+
+**Read honestly:** The composition does NOT beat the existing direct model on MAE or on
+RMSE -- it loses on both, clearly. Composition MAE is 17.970320761320977 vs. the direct
+model's 13.463997241868164 (composition's error is 4.506323519452813 yds higher).
+Composition RMSE is 25.44482184833516 vs. the direct model's 22.288854954881792
+(composition's error is 3.1559668934533676 yds higher). Using the required formula,
+`(direct_mae - comp_mae) / direct_mae = (13.463997241868164 - 17.970320761320977) /
+13.463997241868164 = -0.33469432877182836`, i.e. the composition's MAE is **33.47%
+worse** (relatively) than the direct model's, not better. Likewise `(direct_rmse -
+comp_rmse) / direct_rmse = (22.288854954881792 - 25.44482184833516) / 22.288854954881792
+= -0.14159394458987834`, i.e. the composition's RMSE is **14.16% worse** (relatively)
+than the direct model's. This is a real, unambiguous loss on both metrics, not a mixed or
+partial result -- there is no framing under which the composed point estimate beats the
+model it was built to replace in this run. Quoting the spec's own gate directly: "If
+Model 6 doesn't beat Model 5 ... it is not shipped." This result, on its own, **fails**
+that gate -- the composition is not Model 6 in the spec's numbering, but the same
+discipline applies identically: a composed estimate that loses to the model it was meant
+to replace does not ship, and nothing here suggests otherwise. (Note for the reader: this
+stage validates the POINT ESTIMATE only, not the full NLL/calibration criteria the spec's
+gate literally names for the eventual full Monte Carlo model -- MAE/RMSE is the honest
+analog available at this stage, not a substitute for the real gate check the full Monte
+Carlo plan will need to run; a point-estimate loss of this size makes it very unlikely
+that the fuller criteria would reverse the verdict, but that check was not run here.)
+
+`n` differs meaningfully between the two rows: composition `n=4490` vs. direct model
+`n=6387`, a difference of exactly `1897` -- which equals the real
+`skipped_no_air_yards` count from Step 1 verbatim (`1897` of the `6387` relevant
+player-games in the window, **29.70%**, had no prior target history and therefore no
+safe `trailing_air_yards` value, so the composition skipped them per `composition.py`'s
+own no-fallback design; the direct model's `backtest.walk_forward()` scored all `6387`).
+This is a real, uncontrolled difference in the two rows' populations, not merely a
+technicality: the skipped rows are disproportionately players with little or no prior
+target history (rookies, first appearances, low-usage players), who plausibly have lower,
+less variable `receiving_yards` outcomes that a season-to-date-style direct model can
+predict cheaply -- if so, their presence in the direct model's `n=6387` but absence from
+the composition's `n=4490` could inflate the apparent gap between the two models to some
+unknown degree in the direct model's favor. This script did not re-run the direct model
+restricted to the same `4490`-row subset the composition scored, so this possibility is
+not resolved here and is flagged as an open limitation of this comparison, not something
+to wave away. That said, the size of the observed gap -- a 33.47% relative MAE loss and a
+14.16% relative RMSE loss -- is large enough that a same-`n` re-run explaining away the
+entire result would require the skipped population to be carrying an unusually large
+share of the direct model's apparent advantage; nothing in this run establishes that it
+does, and the honest reading is that the composition currently underperforms the direct
+model on real data, gate discipline says it is not shipped, and the population-mismatch
+caveat is a real question for the next check, not a way to discount the loss.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+import numpy as np
+import pandas as pd
+from nfl_props import backtest, catch_model, composition, data, model, rate_model, yards_model
+
+games = data.load_games()
+pbp = data.load_pbp(seasons=3)
+stats = data.load_player_stats(seasons=3)
+targets = data.load_targets(pbp, stats, games)
+catches = targets[targets['complete'] == 1.0].copy()
+
+stats_share = model.add_trailing_share(stats, 'targets')
+targets_ay = model.add_trailing_air_yards(targets)
+game_ay = targets_ay.drop_duplicates(['player_id', 'game_id'])[['player_id', 'game_id', 'trailing_air_yards']]
+
+relevant = stats_share[stats_share['position_group'].isin(model.RELEVANT_POSITIONS['rec_yds'])].sort_values('date')
+relevant = relevant.merge(game_ay, on=['player_id', 'game_id'], how='left')
+
+start = (stats['date'].max() - timedelta(days=365)).date()
+start_ts = pd.Timestamp(start)
+
+rows = []
+skipped_no_air_yards = 0
+rate_r = catch_r = yards_r = None
+fit_week = None
+for _, g in relevant.iterrows():
+    if g['date'] < start_ts:
+        continue
+    week_key = (g['season'], g['week'])
+    if week_key != fit_week:
+        as_of = g['date'].date()
+        rate_r = rate_model.fit_poisson(stats_share, 'targets', as_of=as_of, halflife_days=180.0, reg=5.0, min_games=200)
+        catch_r = catch_model.fit_catch_rate(targets, as_of=as_of, halflife_days=180.0, reg=5.0, min_targets=200)
+        yards_r = yards_model.fit_yards_per_catch(catches, as_of=as_of, halflife_days=180.0, reg=5.0, min_catches=200)
+        fit_week = week_key
+    ay = g['trailing_air_yards']
+    if pd.isna(ay):
+        skipped_no_air_yards += 1
+        continue  # no target history at all for this player-game -- skip; there is no
+                  # safe air_yards fallback (see composition.py's module docstring)
+    point_est = composition.predicted_rec_yds_point_estimate(
+        rate_r, catch_r, yards_r, g['player_id'], g['position_group'], g['opponent_team'],
+        bool(g['home']), trailing_air_yards=float(ay), trailing_share=g.get('trailing_share'))
+    rows.append({'actual': g['receiving_yards'], 'point_est': point_est})
+
+comp_df = pd.DataFrame(rows)
+comp_mae = float(np.mean(np.abs(comp_df['actual'] - comp_df['point_est'])))
+comp_rmse = float(np.sqrt(np.mean((comp_df['actual'] - comp_df['point_est']) ** 2)))
+print('Composition:', {'n': len(comp_df), 'skipped_no_air_yards': skipped_no_air_yards, 'MAE': comp_mae, 'RMSE': comp_rmse})
+
+direct_preds = backtest.walk_forward(stats, 'rec_yds', start, halflife_days=180.0, reg=5.0, min_games=200)
+direct_median = np.exp(direct_preds['model_mu']) - model.OFFSET
+direct_mae = float(np.mean(np.abs(direct_preds['actual_yards'] - direct_median)))
+direct_rmse = float(np.sqrt(np.mean((direct_preds['actual_yards'] - direct_median) ** 2)))
+print('Direct model (median):', {'n': len(direct_preds), 'MAE': direct_mae, 'RMSE': direct_rmse})
+"
+```
+
 ## Reproducing this baseline
 
 ```bash
