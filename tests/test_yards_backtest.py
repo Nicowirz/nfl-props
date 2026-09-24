@@ -60,3 +60,33 @@ def test_calibration_bins_cover_all_predictions():
     preds = yards_backtest.walk_forward(df, start, halflife_days=100_000, min_catches=50)
     table = yards_backtest.calibration(preds)
     assert table["n"].sum() == len(preds)
+
+
+def test_walk_forward_passes_through_position_split_defense(monkeypatch):
+    """Regression guard for the exact seam CatchRate's own analogous plan found
+    untested via a final-review mutation experiment (walk_forward silently accepting but
+    not forwarding a kwarg to the underlying fit function): confirms walk_forward
+    actually forwards position_split_defense to fit_yards_per_catch, via a monkeypatch
+    spy that captures the actual keyword argument each call receives -- not just that the
+    run completes without error (which it would even if the kwarg were silently dropped,
+    since fit_yards_per_catch's default path also produces valid output on this data).
+    Written in from the start, applying the lesson CatchRate's plan only learned after a
+    final-review fix round.
+    """
+    df = _synthetic_multi_week(n_players=18, n_teams=6, weeks=30, catches_per_player_per_week=3)
+    start = df["date"].iloc[len(df) // 2].date()
+
+    received = []
+    original_fit = yards_backtest.yards_model.fit_yards_per_catch
+
+    def spy(*args, **kwargs):
+        received.append(kwargs.get("position_split_defense"))
+        return original_fit(*args, **kwargs)
+
+    monkeypatch.setattr(yards_backtest.yards_model, "fit_yards_per_catch", spy)
+
+    yards_backtest.walk_forward(df, start, halflife_days=100_000, min_catches=50,
+                                position_split_defense=True)
+
+    assert len(received) > 0
+    assert all(v is True for v in received)

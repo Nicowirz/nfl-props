@@ -23,7 +23,8 @@ EPS = 1e-6
 
 
 def walk_forward(targets: pd.DataFrame, start: date, halflife_days: float = 180.0,
-                 reg: float = 5.0, min_catches: int = 200) -> pd.DataFrame:
+                 reg: float = 5.0, min_catches: int = 200,
+                 position_split_defense: bool = False) -> pd.DataFrame:
     """`targets` must already be filtered to complete == 1 by the caller -- same
     convention as yards_model.fit_yards_per_catch.
     """
@@ -43,7 +44,8 @@ def walk_forward(targets: pd.DataFrame, start: date, halflife_days: float = 180.
             if week_key != fit_week:
                 ratings = yards_model.fit_yards_per_catch(targets, as_of=g["date"].date(),
                                                           halflife_days=halflife_days, reg=reg,
-                                                          min_catches=min_catches)
+                                                          min_catches=min_catches,
+                                                          position_split_defense=position_split_defense)
                 fit_week = week_key
             mu, sigma = yards_model.predicted_yards_distribution(ratings, g["player_id"],
                                                                   g["position_group"],
