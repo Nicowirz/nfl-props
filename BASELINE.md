@@ -255,6 +255,86 @@ print(game_backtest.calibration(preds, 'actual_pass_oe'))
 "
 ```
 
+## CatchRate | Targets (first validation)
+
+**Commit:** `96ca34b` (master). **Data window:** 3 seasons of real nflverse data, 1-year
+walk-forward lookback anchored to the most recent date in `data.load_targets()`'s output
+at run time, run 2026-09-23. **Method:** `catch_backtest.walk_forward()` -- true
+walk-forward, refit every `(season, week)` using only data strictly before that date,
+scored against a per-player recency-weighted trailing completion-rate baseline (blended
+with the fitted model's own position-group base rate for players with no prior targets
+that season). Model: `catch_model.fit_catch_rate()`'s new logistic IRLS fit (player
+ability + opponent defense + home field + per-target aDOT, i.e. `air_yards`), built in
+`docs/superpowers/plans/2026-09-23-nfl-props-catch-rate-model.md`. **Inert:** no CLI
+command (`predict`/`parlay`/`best-bet`/`fantasy-predict`) reads this model -- this is a
+research checkpoint, not a shipping decision, matching how this file already treats
+`targets` and `team pass volume` above.
+
+| Metric | Value |
+|---|---|
+| NLL (model / baseline) | 0.5864556345856085 / 0.6539519937394961 |
+| n | 17257 |
+
+Calibration (predicted-probability decile vs. actual catch rate in that decile):
+
+```
+                  n  mean_predicted  actual_rate
+(-0.001, 0.1]    20        0.083763     0.150000
+(0.1, 0.2]      227        0.164089     0.264317
+(0.2, 0.3]      342        0.249610     0.307018
+(0.3, 0.4]      510        0.355746     0.352941
+(0.4, 0.5]      949        0.457194     0.429926
+(0.5, 0.6]     1875        0.555717     0.537067
+(0.6, 0.7]     3471        0.656518     0.631518
+(0.7, 0.8]     6465        0.752066     0.756226
+(0.8, 0.9]     3379        0.833125     0.815626
+(0.9, 1.0]       19        0.909892     0.684211
+```
+
+**Read honestly:** The model beats the naive per-player recency-weighted baseline by
+0.0675 nats (0.6539519937394961 - 0.5864556345856085 = 0.06749635915388763), a
+~10.32% relative NLL improvement (`(0.6539519937394961 - 0.5864556345856085) /
+0.6539519937394961 = 0.10321301838675183`). This is a real win, and by this file's own
+comparison standard it is the strongest first-validation result recorded here so far:
+larger than `targets`' ~7.7% and much larger than `team pass volume`'s ~0.76% -- all
+three are model-vs-baseline NLL comparisons (not covariate-ablation percentages like
+`snap_share`'s ~0.6%, which measures a different thing, model-vs-model), so this
+comparison is apples-to-apples with those two, not with the ablation figure. Calibration
+is good but not uniform: the two largest bins by far, `(0.7, 0.8]` (n=6465, ~37% of all
+predictions) and `(0.8, 0.9]` (n=3379, ~20%), track closely -- 0.752066 predicted vs.
+0.756226 actual, and 0.833125 predicted vs. 0.815626 actual, respectively -- and
+`(0.3, 0.4]` (n=510) is also tight (0.355746 vs. 0.352941). But the low-probability bins
+show a real, sample-size-backed divergence: `(0.1, 0.2]` (n=227) predicts 0.164089 but
+actually catches at 0.264317 (+0.10), and `(0.2, 0.3]` (n=342) predicts 0.249610 against
+an actual 0.307018 (+0.057) -- both bins have enough rows that this looks like systematic
+underprediction in the low-catch-probability range, not noise. The two extreme-tail bins,
+`(-0.001, 0.1]` (n=20) and `(0.9, 1.0]` (n=19), diverge the most (actual 0.150000 vs.
+predicted 0.083763, and actual 0.684211 vs. predicted 0.909892) but each holds under 20
+rows out of 17257, so those two are too small to read as a calibration problem rather
+than noise. Net: the model wins clearly on NLL, and calibration is solid in the bulk of
+the probability mass (0.7-0.9, ~57% of all predictions) with a real low-probability
+underprediction bias worth investigating in a future pass, not a tail artifact to ignore.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+from nfl_props import data, catch_backtest
+
+games = data.load_games()
+pbp = data.load_pbp(seasons=3)
+stats = data.load_player_stats(seasons=3)
+targets = data.load_targets(pbp, stats, games)
+start = (targets['date'].max() - timedelta(days=365)).date()
+
+preds = catch_backtest.walk_forward(targets, start, halflife_days=180.0, reg=5.0, min_targets=200)
+print(catch_backtest.summarize(preds))
+print(catch_backtest.calibration(preds))
+"
+```
+
 ## Reproducing this baseline
 
 ```bash
