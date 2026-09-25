@@ -142,16 +142,23 @@ def test_walk_forward_skips_rows_with_no_trailing_air_yards_history():
     assert len(preds) == expected_n
 
 
-def test_moment_match_lognormal_on_zero_inflated_sample_does_not_collapse_sigma():
+def test_moment_match_lognormal_on_moderately_zero_inflated_sample_stays_well_conditioned():
     """The real committed MC sample for many player-games (especially QBs, whose true
     receiving usage is near-zero) is heavily zero-inflated: any draw with zero catches
     gives total_yards == 0.0 exactly (a whole-branch review of this module found some
     real rows with >=99% of draws exactly zero). `_moment_match_lognormal` fits ONE
     smooth log-normal to that mixture by taking the sample mean/std of
-    log(mc_sample + OFFSET) -- this must not silently collapse `sigma_hat` down near the
-    `EPS` floor (which would make the fitted distribution absurdly overconfident and is
-    exactly the failure mode a whole-branch review traced as the proximate cause of
-    several catastrophic single-row NLL blowups).
+    log(mc_sample + OFFSET).
+
+    NOTE on scope: this test exercises a MODERATE 80/20 zero/nonzero split, not the
+    extreme (>=99% zero) regime that produces the real production pathology described
+    above -- a later re-review confirmed that this test's `sigma_hat > 1_000 * EPS`
+    threshold would still PASS on the real worst production row (`sigma=0.0136`), so this
+    test does not by itself distinguish healthy behavior from that pathology. What it
+    does verify, for real and by direct computation (not a placeholder), is that
+    `_moment_match_lognormal` produces a well-conditioned, non-degenerate fit at this
+    moderate zero-fraction -- a genuine regression guard for that regime, just not for the
+    more extreme production one.
 
     This constructs a synthetic MC-sample-like array that is 80% exact zeros and 20%
     drawn from a real log-normal-shaped nonzero-yardage generating process (mirroring

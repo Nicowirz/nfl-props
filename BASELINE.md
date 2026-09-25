@@ -792,16 +792,52 @@ season-to-date baseline. `y` in this harness is `log(receiving_yards + OFFSET)` 
 **game** level, not the per-catch level, so that fallback was measuring the wrong thing.
 The fix (`composition_backtest.py`, this commit) fits the existing, unchanged
 game-level `model.fit(stats, "rec_yds", ...)` weekly, purely to source this fallback --
-mirroring `backtest.py`'s own `walk_forward()` baseline pattern exactly. The real,
-corrected baseline on this run is `nll_baseline=1.3400655041895395`, not the old
-`1.592887277155639`. **This does retract the specific numeric claim "own baseline is
-1.592887277155639"** -- but, as shown in the table above, the Monte Carlo composition's
-own `nll_model` (`2.2351073116720697`) is *still* worse than this corrected, tighter
+mirroring `backtest.py`'s own `walk_forward()` baseline PATTERN, though not an identical
+fit: this call passes raw `stats` (no `trailing_share` column), whereas `backtest.py`'s
+own equivalent call first runs `stats = model.add_trailing_share(stats, stat, ...)`
+before fitting (since `rec_yds` is in `model.SHARE_STATS`), so `backtest.py`'s baseline
+fit includes the trailing-share covariate and this composition's baseline fit does not.
+This is not a bug -- the no-share intercept is arguably a more conservative baseline (it
+makes the baseline harder to beat) -- but it does mean the two `nll_baseline` values
+compared in this section are not from an identical fit: an identical-fit recomputation
+(passing the `trailing_share`-augmented frame, already computed earlier in
+`walk_forward()`, into this same `model.fit()` call) gives `nll_baseline=1.403724673315056`
+instead of the committed `1.3400655041895395`. This affects `361` of `4275` rows (`8.4%`,
+the intercept-fallback rows) with a real, material per-row difference -- e.g. the WR
+fallback intercept is `3.2886` under the no-share fit used here vs. `2.5628` under
+`backtest.py`'s exact-pattern fit. The real, corrected baseline actually reported on this
+run is `nll_baseline=1.3400655041895395`, not the old, buggy `1.592887277155639`. **This
+does retract the specific numeric claim "own baseline is 1.592887277155639"** -- but, as
+shown in the table above, the Monte Carlo composition's own `nll_model`
+(`2.2351073116720697`) is *still* worse than this corrected, tighter
 baseline, by `0.8950418074825301` nats (`66.8%` relative) -- a **larger** margin than
 the original (buggy-baseline) write-up's `17.4%`, not a smaller one. See "Why the
 full-population number got worse, not better" below for why -- this is not a
 contradiction of the baseline fix, it is a real, separately-caused, and informative
 result.
+
+**The full-population headline percentages above are themselves seed-dependent --
+read them as one of several plausible single-seed draws, not a precise, stable
+measurement.** A follow-up re-review re-ran this exact walk-forward at 4 independent
+base seeds (all other code and data held identical to this run) and measured
+`mc_summary['nll_model']` ranging from `1.8472` to `2.2351` across those 4 seeds -- a
+`21%` range on the raw `nll_model` value alone. That range propagates to a
+loss-vs-own-(corrected)-baseline range of `37.8%` to `66.8%`, and a loss-vs-direct-model
+range of `47.7%` to `78.7%`. The committed run reported throughout this section
+(`seed=2026`) is confirmed to be the **worst** (least favorable to the composition) of
+the 4 seeds tested. The *sign* of the conclusion -- the composition loses to both its own
+corrected baseline and the direct model on the full population -- is robust across all 4
+seeds tested. The specific *magnitude* (`66.8%`, `78.7%`, and any numeric comparison
+below to the original pre-fix write-up's `17.4%`/`49.6%`) is not: both this run's
+percentages and the original write-up's percentages are single seed-dependent draws, not
+precise, stable measurements, and any comparison between them should be read as a
+comparison between two single draws, not as a precise change in magnitude.
+
+| | seed range across 4 tested seeds | this committed run (`seed=2026`) |
+|---|---|---|
+| `nll_model` (full population) | `1.8472` -- `2.2351` | `2.2351` (worst of the 4) |
+| Loss vs. own corrected baseline | `37.8%` -- `66.8%` | `66.8%` |
+| Loss vs. direct model (matched) | `47.7%` -- `78.7%` | `78.7%` |
 
 **Population check (unchanged from the original write-up -- this fix wave did not touch
 the skip-population mechanism):** `direct_summary['n']` (`6074`) and `mc_summary['n']`
@@ -833,9 +869,12 @@ population, but account for `5388.158520899611 / 9555.083757398097 = 0.563904896
 rows). Both models score badly on these same 11 rows (the direct model's own
 `nll_model` on them, `105.9429617605317`, is two orders of magnitude worse than its
 RB/TE/WR rows too) -- QBs are a genuinely hard, outlier-heavy, near-zero-usage
-sub-population for *any* log-normal-style model in this window, real games included (one
-of the 11 rows is a negative-yardage play, receiving_yards well below zero, floored by
-`model._safe_log_yards`). But the composition's failure on these 11 rows is roughly
+sub-population for *any* log-normal-style model in this window, real games included
+(**three** of the 11 rows are negative-yardage plays -- `00-0023459` (`actual_yards=-9`),
+`00-0033873` (`actual_yards=-10`), `00-0040234` (`actual_yards=-6`) -- though only the
+`-10` row (`00-0033873`) is actually floored by `model._safe_log_yards`, which floors at
+`1.0 - OFFSET = -9`; the `-9` and `-6` rows both sit above that floor and are not
+floored). But the composition's failure on these 11 rows is roughly
 `489.83259280905554 / 105.9429617605317 = 4.62x` worse than the direct model's, because
 the Monte Carlo sample for a near-zero-catch-probability player is itself almost
 entirely exact zeros, and moment-matching one smooth log-normal to that near-degenerate
@@ -854,11 +893,20 @@ whole-branch review's earlier numbers):**
 
 Excluding the 11 QB rows, the composition is a statistical dead heat with the existing
 direct model -- fractionally ahead ex-QB, fractionally behind on WR alone -- both
-differences under half a percent, well inside what a single Monte Carlo re-run's
-sampling noise could move (see below). This matches, within noise, the whole-branch
-review's own earlier finding on the pre-fix run (ex-QB MC 0.31% better, WR-only 0.38%
-dead heat) -- these two aggregates are **stable** across both the original shared-seed
-run and this fix wave's decorrelated-seed run, unlike the full-population number.
+differences under half a percent. A follow-up re-review measured the REAL seed noise on
+these two specific numbers directly, by re-running the full walk-forward at 4 independent
+base seeds (all other code/data identical): the seed-to-seed noise on the ex-QB and
+WR-only gaps is `0.087%`, roughly **4x smaller** than the `0.34%`/`0.35%` gaps themselves
+-- so these gaps are NOT "inside sampling noise." The stronger and more honest read is
+the opposite: both gaps are small in absolute terms **and** stable in sign across all 4
+tested seeds (ex-QB: MC better by `0.32%`-`0.40%` across all seeds; WR-only: MC worse by
+`0.33%`-`0.42%` across all seeds) -- a small, sign-stable gap is better evidence for a
+genuine dead heat than a noise-based dismissal would have been, since it rules out "the
+sign itself is just noise" rather than merely asserting the gap is too small to trust.
+This matches, within that same seed-to-seed variation, the whole-branch review's own
+earlier finding on the pre-fix run (ex-QB MC 0.31% better, WR-only 0.38% dead heat) --
+these two aggregates are **stable** across both the original shared-seed run and this fix
+wave's decorrelated-seed run, unlike the full-population number.
 
 **Why the full-population number got worse, not better, after this fix wave (a real,
 investigated finding, not a bug in this fix wave's own code):** the corrected baseline
@@ -993,8 +1041,13 @@ Monte Carlo composition does **not** beat the existing direct model -- `mc_nll_m
 (`2.2351073116720697`) is worse than `direct_matched_nll_model` (`1.250694422136362`) by
 `0.9844128895357076` nats (`78.7%` relative), and it is also worse than its own
 corrected, tighter baseline (`66.8%` relative, see above) -- both larger margins than the
-original (buggy-baseline, shared-seed) write-up reported, driven almost entirely by `11`
-QB rows (`0.26%` of the population, `56.4%` of the total NLL sum) whose failure mode is
+original (buggy-baseline, shared-seed) write-up reported. As noted above, these specific
+magnitudes are themselves seed-dependent (measured range `47.7%`-`78.7%` vs. direct,
+`37.8%`-`66.8%` vs. own baseline, across 4 tested seeds) and the committed run sits at the
+unfavorable end of that range -- the *sign* of "loses on the full population" is robust
+across all 4 seeds tested, but this exact percentage, and its comparison to the original
+write-up's percentage, should not be read as precise. The loss is driven almost entirely
+by `11` QB rows (`0.26%` of the population, `56.4%` of the total NLL sum) whose failure mode is
 the documented, deliberately-not-fixed zero-inflation/moment-matching mismatch (and, per
 the investigation above, is itself unstable under seed decorrelation, which is why this
 number moved in the "wrong" direction after two real bug fixes). Excluding those 11 QB
