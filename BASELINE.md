@@ -746,6 +746,211 @@ print('Direct model (matched subset, mean):', {'n': len(matched), 'MAE': matched
 "
 ```
 
+## rec_yds full Monte Carlo composition (first validation)
+
+**Commit:** `6214e0a` (master). **Data window:** 3 seasons of real nflverse data, 1-year
+walk-forward lookback, run 2026-09-25. **Method:** `composition_backtest.walk_forward()`
+(Task 2) refits `rate_model`/`catch_model`/`yards_model` weekly, draws 10,000 Monte Carlo
+samples per in-window WR/TE/RB/QB player-game via `composition.simulate_rec_yds()` (Task
+1), moment-matches a log-normal to each sample in `log(receiving_yards + OFFSET)` space,
+and scores real observed `receiving_yards` against that fit -- compared, in the same
+script and window, against `model.py`'s existing direct `rec_yds` fit via
+`backtest.walk_forward()` (existing, unchanged), per the spec's own "Baselines to compare
+against" items 5 and 6 and the spec's literal gate: "If Model 6 doesn't beat Model 5 on
+out-of-sample NLL and calibration, it is not shipped." Built in
+`docs/superpowers/plans/2026-09-24-nfl-props-rec-yards-monte-carlo-composition.md`.
+**Inert:** no CLI command reads this composition -- this is a research checkpoint on
+whether Stage 1's full decomposition beats the existing model, not a shipping decision.
+
+| Model | n | NLL (model) | NLL (season-to-date baseline) |
+|---|---|---|---|
+| Monte Carlo composition (Targets x CatchRate x Yards\|Reception) | `4275` | `1.8707843655646479` | `1.592887277155639` |
+| Existing direct model, full population | `6074` | `0.8681852592317548` | `0.9406648684926634` |
+| Existing direct model, **matched subset** (same `4275` rows the composition actually scored -- apples-to-apples) | `4275` | `1.250694422136362` | `1.403724673315056` |
+
+**Population check (Step 2, required before trusting the comparison):**
+`direct_summary['n']` (`6074`) and `mc_summary['n']` (`4275`) differ by `1799` rows --
+`1799 / 6074 = 0.296180441224893` (29.62%) of the direct model's full population. This is
+the same order of magnitude as the population gap this project already established once
+before, in the `rec_yds point-estimate composition` section above (`1897 / 6387 = 0.297`,
+29.7%), and the same mechanism: of the `1799` skipped rows, `0.9988882712618121` (99.89%)
+have `actual_yards == 0` in that specific game (mean `actual_yards` across the skipped
+rows: `0.010005558643690939`, essentially always exactly zero). These are **player-games
+with zero targets recorded in that specific game (a join-miss against the targets
+table), not new players or low-history players.** `model.add_trailing_air_yards` never
+returns NaN on its own output -- a low-sample or brand-new player falls back to a
+group/overall average; the ONLY way `trailing_air_yards` is NaN in the merged
+walk-forward frame is a player-game where the player recorded literally zero targets in
+that specific game, so no row exists for that `game_id` in the targets table and the
+left-merge produces NaN. A 10-year veteran can trigger this on any game where they simply
+weren't targeted -- this has nothing to do with career history. A gap this large (29.6%
+of the population) clearly requires a population-matched re-run per this project's own
+established discipline (first applied in the point-estimate composition plan's own Task
+3 fix) before trusting the comparison -- the raw, unequal-n row above (`4275` vs `6074`)
+is **not** the trusted comparison; the matched-subset row (`n=4275` on both sides,
+restricting `direct_preds` to the exact `(player_id, date)` pairs `mc_preds` actually
+scored) is the one the "Read honestly" paragraph below is based on.
+
+**Calibration (PIT deciles, model's own distribution):**
+
+Monte Carlo composition (`n=4275`):
+```
+                 n  mean_pit
+(-0.001, 0.1]  400  0.049656
+(0.1, 0.2]     420  0.149773
+(0.2, 0.3]     390  0.247735
+(0.3, 0.4]     338  0.347858
+(0.4, 0.5]     381  0.452510
+(0.5, 0.6]     377  0.548787
+(0.6, 0.7]     404  0.650102
+(0.7, 0.8]     456  0.750509
+(0.8, 0.9]     516  0.852377
+(0.9, 1.0]     593  0.953729
+```
+
+Existing direct model, full population (`n=6074`):
+```
+                 n  mean_pit
+(-0.001, 0.1]  576  0.053340
+(0.1, 0.2]     578  0.150158
+(0.2, 0.3]     647  0.252241
+(0.3, 0.4]     751  0.351025
+(0.4, 0.5]     704  0.449163
+(0.5, 0.6]     579  0.548553
+(0.6, 0.7]     480  0.650764
+(0.7, 0.8]     514  0.749635
+(0.8, 0.9]     562  0.851457
+(0.9, 1.0]     683  0.953254
+```
+
+Existing direct model, matched subset (`n=4275`, the trusted apples-to-apples
+comparison -- same `(player_id, date)` rows as the Monte Carlo composition table above):
+```
+                 n  mean_pit
+(-0.001, 0.1]  412  0.049378
+(0.1, 0.2]     337  0.147157
+(0.2, 0.3]     361  0.249904
+(0.3, 0.4]     352  0.350567
+(0.4, 0.5]     365  0.452047
+(0.5, 0.6]     399  0.551424
+(0.6, 0.7]     402  0.650776
+(0.7, 0.8]     452  0.750503
+(0.8, 0.9]     526  0.851416
+(0.9, 1.0]     669  0.953359
+```
+
+**Read honestly:** On the trusted, population-matched comparison (`n=4275` on both
+sides), the Monte Carlo composition does **not** beat the existing direct model on NLL --
+it loses badly. `mc_nll_model` (`1.8707843655646479`) is **worse** than
+`direct_matched_nll_model` (`1.250694422136362`) by `0.6200899434282858` nats, a
+`0.6200899434282858 / 1.250694422136362 = 0.49579652107913375` (49.6%) relative
+disadvantage for the composition -- an order of magnitude larger than any margin recorded
+elsewhere in this file (the largest prior loss, `Yards | Reception`'s
+`position_split_defense` ablation, was `-0.435%`). Worse still: the Monte Carlo
+composition does not even beat its **own** season-to-date baseline on its own
+population -- `mc_nll_model` (`1.8707843655646479`) is **worse** than `mc_nll_baseline`
+(`1.592887277155639`) by `0.27789708840900884` nats
+(`0.27789708840900884 / 1.592887277155639 = 0.17446123928194063`, 17.4% relative), the
+only model-vs-own-baseline comparison in this entire file that comes out negative -- every
+other first-validation entry above (`targets`, `team pass volume`, `CatchRate | Targets`,
+`Yards | Reception`) beats its own baseline. By contrast, the direct model's matched-subset
+result is a normal, real win over its own baseline: `direct_matched_nll_model`
+(`1.250694422136362`) beats `direct_matched_nll_baseline` (`1.403724673315056`) by
+`0.15303025117869384` nats (`10.9%` relative improvement), in line with this file's other
+established results. (Note: `mc_nll_baseline` and `direct_matched_nll_baseline` are
+**not** on the same baseline formula -- the Monte Carlo composition's baseline falls back
+to `yards_model`'s per-reception position intercepts, per `composition_backtest.py`'s own
+docstring, while the direct model's baseline falls back to `model.fit`'s own
+directly-fit `rec_yds` intercepts -- so only the `nll_model` column, not the
+`nll_baseline` column, is a valid head-to-head read between the two models, matching this
+file's own established caveat for the `snap_share` and `position_split_defense`
+ablations above.)
+
+Calibration does not rescue this result, and does not show a clean advantage for either
+side. Per-bin `mean_pit` values sit close to their bin's own target center for both
+models across every bucket (e.g. the `(0.4, 0.5]` bin: `0.452510` for the composition,
+`0.452047` for the direct matched subset, both near `0.45`) -- so neither model shows an
+obvious, gross PIT-centering failure. But bin **counts** (each of the 10 bins should hold
+`4275 / 10 = 427.5` rows if uniform) skew toward the top decile for both models: the
+composition's `(0.9, 1.0]` bin holds `593` rows, `38.7%` above the expected `427.5`
+(`(593 - 427.5) / 427.5 = 0.3871345029239766`), while its `(0.3, 0.4]` bin (the
+low-count outlier) holds `338`, `20.9%` below expected
+(`(338 - 427.5) / 427.5 = -0.20935672514619882`). The direct matched subset's skew is, if
+anything, slightly **larger**: its `(0.9, 1.0]` bin holds `669`, `56.5%` above expected
+(`(669 - 427.5) / 427.5 = 0.5649122807017544`), and its `(0.1, 0.2]` bin (its low-count
+outlier) holds `337`, `21.2%` below expected
+(`(337 - 427.5) / 427.5 = -0.21169590643274855`). Neither table is uniform, and the
+direct model's raw bin-count skew is not better than the composition's -- but this is not
+a redeeming factor for the composition: its catastrophic NLL loss is not explained away
+by a calibration advantage, since there isn't one. Both models show the same qualitative
+top-decile-heavy pattern in this window, and the direct model still wins decisively on
+NLL despite its own top-decile skew being larger in raw counts.
+
+Quoting the spec's own gate directly: "If Model 6 doesn't beat Model 5 ... it is not
+shipped." **This result fails that gate, plainly and by a wide margin.** The Monte Carlo
+composition loses to the existing direct model on NLL by a 49.6% relative margin (using
+the trusted, population-matched `n=4275` comparison, not the raw unequal-n numbers), and
+it does not offer a compensating calibration advantage to weigh against that loss --
+calibration is, if anything, comparably imperfect on both sides. This is a clear, honest
+loss, not a partial win or a close call: **Model 6 (this full Monte Carlo composition) is
+not shipped, per the spec's own literal gate.** The scale of this loss (49.6% relative
+NLL, and losing to its own trivial baseline by 17.4%) is different in kind from the
+point-estimate composition's earlier near-dead-heat result on MAE/RMSE -- point-estimate
+accuracy and full-distribution NLL are measuring different things, and this result shows
+the full Monte Carlo composition's moment-matched log-normal fit is a substantially worse
+probabilistic model of `receiving_yards` than the existing direct fit, not merely a
+smaller-margin loss on a stricter metric. This is real information this project's gate
+discipline requires acting on honestly: this composition does not ship, and the natural
+next step is investigating why the moment-matched fit underperforms so badly (e.g.
+whether the log-normal moment-match is a poor fit to the true MC sample shape, or whether
+compounding three separately-fit sub-models inflates variance) -- not scoped or attempted
+by this task.
+
+**Reproducing this result:**
+
+```bash
+cd nfl-props
+.venv\Scripts\python -c "
+from datetime import timedelta
+import numpy as np
+import pandas as pd
+from nfl_props import backtest, composition_backtest, data, model
+
+games = data.load_games()
+pbp = data.load_pbp(seasons=3)
+stats = data.load_player_stats(seasons=3)
+targets = data.load_targets(pbp, stats, games)
+
+start = (stats['date'].max() - timedelta(days=365)).date()
+
+mc_preds = composition_backtest.walk_forward(
+    stats, targets, start, halflife_days=180.0, reg=5.0,
+    min_games=200, min_targets=200, min_catches=200, n_draws=10_000, seed=2026)
+mc_summary = composition_backtest.summarize(mc_preds)
+mc_cal = composition_backtest.calibration(mc_preds)
+print('Monte Carlo composition summarize():', mc_summary)
+print('Monte Carlo composition calibration():')
+print(mc_cal)
+
+direct_preds = backtest.walk_forward(stats, 'rec_yds', start, halflife_days=180.0, reg=5.0, min_games=200)
+direct_summary = backtest.summarize(direct_preds)
+direct_cal = backtest.calibration(direct_preds)
+print('Direct model summarize():', direct_summary)
+print('Direct model calibration():')
+print(direct_cal)
+"
+```
+
+The population-matched direct-model subset (used for the trusted comparison above) is
+computed by filtering `direct_preds` down to the same `(player_id, date)` pairs
+`mc_preds` scored, then recomputing NLL/calibration with `backtest.py`'s own `_nll`/PIT
+formulas on that subset:
+
+```python
+mc_keys = mc_preds[['player_id', 'date']].drop_duplicates()
+matched = direct_preds.merge(mc_keys, on=['player_id', 'date'], how='inner')
+```
+
 ## Reproducing this baseline
 
 ```bash
