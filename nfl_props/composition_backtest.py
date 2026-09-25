@@ -13,11 +13,13 @@ owning its scoring functions locally, e.g. yards_backtest.py/rate_backtest.py/
 catch_backtest.py all do this too rather than cross-importing a sibling's private
 helpers).
 
-A player-game with no prior target history (trailing_air_yards == NaN, see
-model.add_trailing_air_yards's docstring) is skipped entirely -- there is no safe
-fallback for aDOT (see composition.py's module docstring), matching the exact skip
-convention already used and honestly recorded in the point-estimate composition's own
-BASELINE.md entry.
+A player-game with literally zero targets recorded in that specific game has no
+matching row in the targets table at all, so the left-merge against game_ay produces
+NaN for trailing_air_yards -- this row is skipped entirely rather than erroring or
+using a wrong fallback (add_trailing_air_yards itself never returns NaN on its own
+output -- see its docstring -- so this is purely a join-miss, not a new-player/
+no-prior-history scenario), matching the exact skip convention already used and
+honestly recorded in the point-estimate composition's own BASELINE.md entry.
 """
 from __future__ import annotations
 

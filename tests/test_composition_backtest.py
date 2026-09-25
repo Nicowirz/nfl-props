@@ -106,12 +106,16 @@ def test_calibration_bins_cover_all_predictions():
 
 
 def test_walk_forward_skips_rows_with_no_trailing_air_yards_history():
-    """A player-game with no prior target history has trailing_air_yards == NaN (see
-    model.add_trailing_air_yards's docstring) -- there is no safe fallback (see
-    composition.py's module docstring), so walk_forward must skip scoring that row
-    rather than erroring or silently using a wrong fallback. This uses a single new
-    player whose first-ever target is inside the test window, so it has zero prior
-    history and must produce trailing_air_yards == NaN for that first game.
+    """A player-game with literally zero targets recorded in that specific game has no
+    matching row in the targets table, so the left-merge against game_ay produces NaN
+    for trailing_air_yards (add_trailing_air_yards itself never returns NaN on its own
+    output -- see its docstring -- this is purely a join-miss) -- there is no safe
+    fallback for aDOT (see composition.py's module docstring), so walk_forward must skip
+    scoring that row rather than erroring or silently using a wrong fallback. This uses
+    NEWP, a player present in stats_df (with targets=1 for that game) but with NO
+    corresponding row in targets_df for that game_id, so game_ay has no entry for NEWP
+    and the left merge produces trailing_air_yards == NaN for that row -- not a
+    new-player/no-prior-history scenario.
     """
     targets_df, stats_df = _synthetic_multi_week(weeks=20)
     # Use a start date that's a few games in to allow fitting history, while keeping NEWP in-window with no trailing history
