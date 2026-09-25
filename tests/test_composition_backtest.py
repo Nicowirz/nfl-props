@@ -140,3 +140,54 @@ def test_walk_forward_skips_rows_with_no_trailing_air_yards_history():
     assert "NEWP" not in preds["player_id"].values
     expected_n = int((stats_df["date"] >= pd.Timestamp(start)).sum()) - 1
     assert len(preds) == expected_n
+
+
+def test_moment_match_lognormal_on_zero_inflated_sample_does_not_collapse_sigma():
+    """The real committed MC sample for many player-games (especially QBs, whose true
+    receiving usage is near-zero) is heavily zero-inflated: any draw with zero catches
+    gives total_yards == 0.0 exactly (a whole-branch review of this module found some
+    real rows with >=99% of draws exactly zero). `_moment_match_lognormal` fits ONE
+    smooth log-normal to that mixture by taking the sample mean/std of
+    log(mc_sample + OFFSET) -- this must not silently collapse `sigma_hat` down near the
+    `EPS` floor (which would make the fitted distribution absurdly overconfident and is
+    exactly the failure mode a whole-branch review traced as the proximate cause of
+    several catastrophic single-row NLL blowups).
+
+    This constructs a synthetic MC-sample-like array that is 80% exact zeros and 20%
+    drawn from a real log-normal-shaped nonzero-yardage generating process (mirroring
+    simulate_rec_yds()'s own np.maximum(0.0, np.exp(log_yards) - OFFSET) idiom), then
+    asserts the actual (mu_hat, sigma_hat) `_moment_match_lognormal` returns for it,
+    computed by hand from the same real run below rather than a placeholder:
+
+        rng = np.random.default_rng(42); n=100_000; 80% exact zeros, 20% drawn from
+        max(0, exp(Normal(mu_ln=3.5, sigma_ln=0.6)) - OFFSET)
+        -> mu_hat = 2.543718879029954, sigma_hat = 0.5498275870470118
+
+    (verified reproducible across repeated runs with the same seed). sigma_hat sits
+    close to the nonzero-generating process's own sigma_ln=0.6 and two orders of
+    magnitude above EPS=1e-6 -- a real, un-collapsed fit for THIS specific zero
+    fraction/generating process. If a future change to `_moment_match_lognormal`
+    collapses sigma_hat toward EPS (or inflates it well past the nonzero generator's own
+    sigma_ln) for this exact synthetic input, this test fails.
+    """
+    rng = np.random.default_rng(42)
+    n = 100_000
+    frac_zero = 0.8
+    n_zero = int(n * frac_zero)
+    n_nonzero = n - n_zero
+    mu_ln, sigma_ln = 3.5, 0.6
+    nonzero_draws = np.maximum(0.0, np.exp(rng.normal(mu_ln, sigma_ln, n_nonzero)) - model.OFFSET)
+    sample = np.concatenate([np.zeros(n_zero), nonzero_draws])
+    rng.shuffle(sample)
+
+    mu_hat, sigma_hat = composition_backtest._moment_match_lognormal(sample)
+
+    assert abs(mu_hat - 2.543718879029954) < 0.05
+    assert abs(sigma_hat - 0.5498275870470118) < 0.05
+    # The real regression this guards against: sigma_hat silently collapsing to (or near)
+    # the EPS floor despite a meaningfully-varying nonzero component in the sample.
+    assert sigma_hat > 1_000 * composition_backtest.EPS
+    # sigma_hat should stay in the real, computed neighborhood of the nonzero
+    # generating process's own sigma_ln=0.6 for this specific 80/20 zero/nonzero split
+    # -- not collapsed near zero, and not blown up far past it either.
+    assert 0.3 < sigma_hat < 0.6

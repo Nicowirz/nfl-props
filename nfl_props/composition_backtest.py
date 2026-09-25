@@ -4,14 +4,24 @@ week, draw >=10,000 Monte Carlo samples per in-window player-game via
 composition.simulate_rec_yds(), moment-match a log-normal to the MC sample in
 log(receiving_yards + OFFSET) space, and score average negative log-likelihood + PIT
 calibration of the REAL observed receiving_yards under that fitted log-normal -- against
-a per-player season-to-date-average log-yards baseline (falling back to the fitted
-yards_model's own position-group base rate for a player with no prior catches that
-season), mirroring backtest.py's/yards_backtest.py's baseline pattern and honesty
-framing exactly. Reuses backtest.py's own log-normal NLL/PIT-calibration formulas (same
-math, not reimported -- matches this codebase's own convention of each backtest module
-owning its scoring functions locally, e.g. yards_backtest.py/rate_backtest.py/
-catch_backtest.py all do this too rather than cross-importing a sibling's private
-helpers).
+a per-player season-to-date-average log-yards baseline (falling back, for a player's
+first scored game of the season, to a GAME-level direct model's position-group base rate
+-- model.fit(stats, "rec_yds", ...), fit weekly purely to source this fallback; NOT
+yards_model's per-catch position_intercept/sigma, a units mismatch since `y` here is
+log(receiving_yards + OFFSET) at the game level, not the per-catch level), mirroring
+backtest.py's/yards_backtest.py's baseline pattern and honesty framing exactly. Season
+totals accumulate once per relevant player-game processed by this loop (including
+zero-yard games), not once per catch, so "first scored game of the season" is the real
+trigger for this fallback, not "no prior catches." Reuses backtest.py's own log-normal
+NLL/PIT-calibration formulas (same math, not reimported -- matches this codebase's own
+convention of each backtest module owning its scoring functions locally, e.g.
+yards_backtest.py/rate_backtest.py/catch_backtest.py all do this too rather than
+cross-importing a sibling's private helpers).
+
+Each scored row's `composition.simulate_rec_yds()` call uses a distinct, reproducible
+per-row seed (`seed + row_counter` when `seed` is not None; `None` otherwise), not one
+shared `seed` value for every row -- so Monte Carlo sampling error is independent across
+rows instead of being perfectly correlated across the entire scored population.
 
 A player-game with literally zero targets recorded in that specific game has no
 matching row in the targets table at all, so the left-merge against game_ay produces
@@ -56,10 +66,11 @@ def walk_forward(stats: pd.DataFrame, targets: pd.DataFrame, start: date,
                .sort_values("date").merge(game_ay, on=["player_id", "game_id"], how="left"))
 
     rows = []
-    rate_r = catch_r = yards_r = None
+    rate_r = catch_r = yards_r = rec_r = None
     fit_week = None
     season_totals: dict[str, list[float]] = {}
     last_season = None
+    row_counter = 0
     for _, g in relevant.iterrows():
         if g["season"] != last_season:
             season_totals = {}
@@ -78,19 +89,34 @@ def walk_forward(stats: pd.DataFrame, targets: pd.DataFrame, start: date,
                 yards_r = yards_model.fit_yards_per_catch(catches, as_of=as_of,
                                                            halflife_days=halflife_days, reg=reg,
                                                            min_catches=min_catches)
+                # Fit the existing, unchanged game-level direct model purely to source a
+                # GAME-level baseline fallback (position_intercept/intercept_fallback/sigma/
+                # sigma_global). yards_r's own position_intercept/sigma are fit in PER-CATCH
+                # log-yards space (yards_model.fit_yards_per_catch), not per-game log-yards
+                # space -- `y` here is log(receiving_yards + OFFSET) at the GAME level, so
+                # falling back to yards_r's per-catch parameters was a units mismatch. This
+                # mirrors backtest.py's own walk_forward() baseline computation exactly.
+                rec_r = model.fit(stats, "rec_yds", as_of=as_of, halflife_days=halflife_days,
+                                  reg=reg, min_games=min_games)
                 fit_week = week_key
             ay = g["trailing_air_yards"]
             if not pd.isna(ay):
+                # Each scored row gets a distinct but reproducible seed derived from the
+                # base seed and the row's position among scored rows (seed + row_counter),
+                # so per-row Monte Carlo error is independent across rows instead of being
+                # perfectly correlated (every row previously reused the exact same seed).
+                row_seed = None if seed is None else seed + row_counter
+                row_counter += 1
                 mc_sample = composition.simulate_rec_yds(
                     rate_r, catch_r, yards_r, g["player_id"], g["position_group"],
                     g["opponent_team"], bool(g["home"]), trailing_air_yards=float(ay),
-                    trailing_share=g.get("trailing_share"), n_draws=n_draws, seed=seed)
+                    trailing_share=g.get("trailing_share"), n_draws=n_draws, seed=row_seed)
                 model_mu, model_sigma = _moment_match_lognormal(mc_sample)
                 prior = season_totals.get(g["player_id"], [])
                 base_mu = (float(np.mean(prior)) if prior
-                          else yards_r.position_intercept.get(g["position_group"],
-                                                              yards_r.intercept_fallback))
-                base_sigma = yards_r.sigma.get(g["position_group"], yards_r.sigma_global)
+                          else rec_r.position_intercept.get(g["position_group"],
+                                                            rec_r.intercept_fallback))
+                base_sigma = rec_r.sigma.get(g["position_group"], rec_r.sigma_global)
                 rows.append({
                     "date": g["date"], "player_id": g["player_id"],
                     "position_group": g["position_group"], "y": y,
