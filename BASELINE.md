@@ -748,67 +748,162 @@ print('Direct model (matched subset, mean):', {'n': len(matched), 'MAE': matched
 
 ## rec_yds full Monte Carlo composition (first validation)
 
-**Commit:** `6214e0a` (master). **Data window:** 3 seasons of real nflverse data, 1-year
-walk-forward lookback, run 2026-09-25. **Method:** `composition_backtest.walk_forward()`
-(Task 2) refits `rate_model`/`catch_model`/`yards_model` weekly, draws 10,000 Monte Carlo
-samples per in-window WR/TE/RB/QB player-game via `composition.simulate_rec_yds()` (Task
-1), moment-matches a log-normal to each sample in `log(receiving_yards + OFFSET)` space,
-and scores real observed `receiving_yards` against that fit -- compared, in the same
-script and window, against `model.py`'s existing direct `rec_yds` fit via
-`backtest.walk_forward()` (existing, unchanged), per the spec's own "Baselines to compare
-against" items 5 and 6 and the spec's literal gate: "If Model 6 doesn't beat Model 5 on
-out-of-sample NLL and calibration, it is not shipped." Built in
+**Commit:** `6a7fc3e` (master; fixes a units-mismatch baseline bug and a shared-seed
+decorrelation bug found by a final whole-branch review of this plan -- see below).
+**Data window:** 3 seasons of real nflverse data, 1-year walk-forward lookback, run
+2026-09-25. **Method:** `composition_backtest.walk_forward()` refits
+`rate_model`/`catch_model`/`yards_model` weekly, draws 10,000 Monte Carlo samples per
+in-window WR/TE/RB/QB player-game via `composition.simulate_rec_yds()`, moment-matches a
+log-normal to each sample in `log(receiving_yards + OFFSET)` space, and scores real
+observed `receiving_yards` against that fit -- compared, in the same script and window,
+against `model.py`'s existing direct `rec_yds` fit via `backtest.walk_forward()`
+(existing, unchanged), per the spec's own "Baselines to compare against" items 5 and 6
+and the spec's literal gate: "If Model 6 doesn't beat Model 5 on out-of-sample NLL and
+calibration, it is not shipped." Built in
 `docs/superpowers/plans/2026-09-24-nfl-props-rec-yards-monte-carlo-composition.md`.
 **Inert:** no CLI command reads this composition -- this is a research checkpoint on
 whether Stage 1's full decomposition beats the existing model, not a shipping decision.
 
+**This section replaces, not merely amends, an earlier committed write-up (commit
+`add0e8e`) that claimed a flat "49.6% relative NLL loss, worse than its own baseline."**
+A final whole-branch review found that headline was **substantially an artifact**: (1) a
+real bug in `composition_backtest.py`'s baseline computation (it approximated a
+per-*game* log-yards baseline using `yards_model`'s per-*catch* efficiency parameters --
+a units mismatch), and (2) 11 QB player-games out of 4275 (0.26% of the population)
+carried a wildly disproportionate share of the total NLL gap, driven by a known,
+documented-but-not-fixed methodology issue (zero-inflated Monte Carlo samples collapsing
+the moment-matched log-normal's fitted sigma). This rewrite fixes bug (1), decorrelates
+a second real bug (every row previously reused the identical RNG seed), documents
+issue (2) as a confirmed, deliberately-not-fixed structural limitation, and reports the
+resulting corrected numbers honestly below -- including a genuinely surprising
+consequence of the seed-decorrelation fix explained in detail further down.
+
 | Model | n | NLL (model) | NLL (season-to-date baseline) |
 |---|---|---|---|
-| Monte Carlo composition (Targets x CatchRate x Yards\|Reception) | `4275` | `1.8707843655646479` | `1.592887277155639` |
+| Monte Carlo composition (Targets x CatchRate x Yards\|Reception) | `4275` | `2.2351073116720697` | `1.3400655041895395` |
 | Existing direct model, full population | `6074` | `0.8681852592317548` | `0.9406648684926634` |
 | Existing direct model, **matched subset** (same `4275` rows the composition actually scored -- apples-to-apples) | `4275` | `1.250694422136362` | `1.403724673315056` |
 
-**Population check (Step 2, required before trusting the comparison):**
-`direct_summary['n']` (`6074`) and `mc_summary['n']` (`4275`) differ by `1799` rows --
-`1799 / 6074 = 0.296180441224893` (29.62%) of the direct model's full population. This is
-the same order of magnitude as the population gap this project already established once
-before, in the `rec_yds point-estimate composition` section above (`1897 / 6387 = 0.297`,
-29.7%), and the same mechanism: of the `1799` skipped rows, `0.9988882712618121` (99.89%)
-have `actual_yards == 0` in that specific game (mean `actual_yards` across the skipped
-rows: `0.010005558643690939`, essentially always exactly zero). These are **player-games
-with zero targets recorded in that specific game (a join-miss against the targets
-table), not new players or low-history players.** `model.add_trailing_air_yards` never
-returns NaN on its own output -- a low-sample or brand-new player falls back to a
-group/overall average; the ONLY way `trailing_air_yards` is NaN in the merged
-walk-forward frame is a player-game where the player recorded literally zero targets in
-that specific game, so no row exists for that `game_id` in the targets table and the
-left-merge produces NaN. A 10-year veteran can trigger this on any game where they simply
-weren't targeted -- this has nothing to do with career history. A gap this large (29.6%
-of the population) clearly requires a population-matched re-run per this project's own
-established discipline (first applied in the point-estimate composition plan's own Task
-3 fix) before trusting the comparison -- the raw, unequal-n row above (`4275` vs `6074`)
-is **not** the trusted comparison; the matched-subset row (`n=4275` on both sides,
-restricting `direct_preds` to the exact `(player_id, date)` pairs `mc_preds` actually
-scored) is the one the "Read honestly" paragraph below is based on.
+**The corrected baseline retracts the ORIGINAL committed bug, but not the headline
+claim.** The old committed `mc_nll_baseline` (`1.592887277155639`) was computed by
+falling back to `yards_r.position_intercept`/`yards_r.sigma` -- the per-catch
+yards-per-reception model's own fitted parameters -- to approximate a per-*game*
+season-to-date baseline. `y` in this harness is `log(receiving_yards + OFFSET)` at the
+**game** level, not the per-catch level, so that fallback was measuring the wrong thing.
+The fix (`composition_backtest.py`, this commit) fits the existing, unchanged
+game-level `model.fit(stats, "rec_yds", ...)` weekly, purely to source this fallback --
+mirroring `backtest.py`'s own `walk_forward()` baseline pattern exactly. The real,
+corrected baseline on this run is `nll_baseline=1.3400655041895395`, not the old
+`1.592887277155639`. **This does retract the specific numeric claim "own baseline is
+1.592887277155639"** -- but, as shown in the table above, the Monte Carlo composition's
+own `nll_model` (`2.2351073116720697`) is *still* worse than this corrected, tighter
+baseline, by `0.8950418074825301` nats (`66.8%` relative) -- a **larger** margin than
+the original (buggy-baseline) write-up's `17.4%`, not a smaller one. See "Why the
+full-population number got worse, not better" below for why -- this is not a
+contradiction of the baseline fix, it is a real, separately-caused, and informative
+result.
+
+**Population check (unchanged from the original write-up -- this fix wave did not touch
+the skip-population mechanism):** `direct_summary['n']` (`6074`) and `mc_summary['n']`
+(`4275`) differ by `1799` rows -- `1799 / 6074 = 0.296180441224893` (29.62%) of the
+direct model's full population. Of the `1799` skipped rows, `0.9988882712618121`
+(99.89%) have `actual_yards == 0` in that specific game (mean `actual_yards` across the
+skipped rows: `0.010005558643690939`). These are **player-games with zero targets
+recorded in that specific game (a join-miss against the targets table), not new players
+or low-history players** -- `model.add_trailing_air_yards` never returns NaN on its own
+output; the only way `trailing_air_yards` is NaN in the merged walk-forward frame is a
+player-game where the player recorded literally zero targets that specific game, so no
+row exists for that `game_id` in the targets table and the left-merge produces NaN. A
+gap this large requires the population-matched re-run used throughout this section (not
+the raw, unequal-n row) as the trusted comparison.
+
+**Position-split breakdown (freshly computed from this run's own predictions, not cited
+from the whole-branch review):**
+
+| Position | n | MC `nll_model` | Direct (matched) `nll_model` |
+|---|---|---|---|
+| QB | `11` | `489.83259280905554` | `105.9429617605317` |
+| RB | `1064` | `0.9132808931908387` | `0.930345824040724` |
+| TE | `1117` | `0.8767223893986158` | `0.8803224297199099` |
+| WR | `2083` | `1.0638000274532793` | `1.060075835089116` |
+
+`11` QB player-games are `11 / 4275 = 0.0025730994152046785` (`0.26%`) of the scored
+population, but account for `5388.158520899611 / 9555.083757398097 = 0.5639048968804473`
+(**56.4%**) of the composition's total summed NLL (`sum(row_nll)` across all `4275`
+rows). Both models score badly on these same 11 rows (the direct model's own
+`nll_model` on them, `105.9429617605317`, is two orders of magnitude worse than its
+RB/TE/WR rows too) -- QBs are a genuinely hard, outlier-heavy, near-zero-usage
+sub-population for *any* log-normal-style model in this window, real games included (one
+of the 11 rows is a negative-yardage play, receiving_yards well below zero, floored by
+`model._safe_log_yards`). But the composition's failure on these 11 rows is roughly
+`489.83259280905554 / 105.9429617605317 = 4.62x` worse than the direct model's, because
+the Monte Carlo sample for a near-zero-catch-probability player is itself almost
+entirely exact zeros, and moment-matching one smooth log-normal to that near-degenerate
+sample collapses the fitted `sigma_hat` to a tiny value (`0.0136`-`0.0667` on these 11
+rows) -- so any real deviation from the degenerate mode produces an enormous
+`(y - mu)^2 / (2 * sigma^2)` penalty. This is the zero-inflation/moment-matching
+mismatch documented as a confirmed, not-fixed structural limitation below.
+
+**Ex-QB and WR-only aggregates (freshly re-derived from this run, not copied from the
+whole-branch review's earlier numbers):**
+
+| Population | n | MC `nll_model` | Direct (matched) `nll_model` | Read |
+|---|---|---|---|---|
+| Ex-QB (RB+TE+WR) | `4264` | `0.9772338734752551` | `0.980615871310295` | MC **better** by `0.0033819978350399` nats (`0.34%` relative) |
+| WR-only (spec's actual scoped market) | `2083` | `1.0638000274532793` | `1.060075835089116` | MC **worse** by `0.0037241923641633257` nats (`0.35%` relative) |
+
+Excluding the 11 QB rows, the composition is a statistical dead heat with the existing
+direct model -- fractionally ahead ex-QB, fractionally behind on WR alone -- both
+differences under half a percent, well inside what a single Monte Carlo re-run's
+sampling noise could move (see below). This matches, within noise, the whole-branch
+review's own earlier finding on the pre-fix run (ex-QB MC 0.31% better, WR-only 0.38%
+dead heat) -- these two aggregates are **stable** across both the original shared-seed
+run and this fix wave's decorrelated-seed run, unlike the full-population number.
+
+**Why the full-population number got worse, not better, after this fix wave (a real,
+investigated finding, not a bug in this fix wave's own code):** the corrected baseline
+(`1.3400655041895395`, vs. the old buggy `1.592887277155639`) is tighter and more
+accurate, as intended. But `mc_summary['nll_model']` itself moved from the originally
+committed `1.8707843655646479` to `2.2351073116720697` -- **worse**, not better --
+because of Fix 2 (decorrelating the per-row Monte Carlo seed). Before this fix, every
+scored row's `simulate_rec_yds()` call reused the exact same `seed=2026`, so every row's
+Monte Carlo sampling error was driven by the identical underlying random stream. After
+decorrelating (`seed + row_counter` per row), the same 11 QB rows' near-degenerate,
+almost-all-zero samples are no longer all subject to the same shared-seed "luck" -- and
+in this run, several of them landed on an even more extreme `sigma_hat` collapse than
+the original shared-seed run happened to produce (the single worst row, player
+`00-0040234`, has `model_sigma=0.013586` and contributes `2273.6` nats of NLL alone,
+larger than any single-row blowup the whole-branch review's pre-fix investigation cited).
+This is **additional, real confirmation that the zero-inflation moment-matching mismatch
+(documented below) is a genuine instability, not a one-off artifact of a single shared
+seed** -- decorrelating the seed did not fix or mask it, it exposed that the QB-row
+failure mode is itself highly seed-sensitive on the sub-population where it occurs, while
+leaving the much larger RB/TE/WR-only aggregates essentially unchanged. This is exactly
+the behavior expected if the real, underlying problem is what limitation (2) below
+describes, and rules out "the original 49.6% number was just an unlucky shared seed
+happening to look bad" as the explanation -- the truth is closer to "the shared seed
+happened to look *less* bad than average for this specific, structurally fragile
+sub-population."
 
 **Calibration (PIT deciles, model's own distribution):**
 
-Monte Carlo composition (`n=4275`):
+Monte Carlo composition (`n=4275`, this fixed run):
 ```
                  n  mean_pit
-(-0.001, 0.1]  400  0.049656
-(0.1, 0.2]     420  0.149773
-(0.2, 0.3]     390  0.247735
-(0.3, 0.4]     338  0.347858
-(0.4, 0.5]     381  0.452510
-(0.5, 0.6]     377  0.548787
-(0.6, 0.7]     404  0.650102
-(0.7, 0.8]     456  0.750509
-(0.8, 0.9]     516  0.852377
-(0.9, 1.0]     593  0.953729
+(-0.001, 0.1]  406  0.049932
+(0.1, 0.2]     422  0.149645
+(0.2, 0.3]     383  0.247763
+(0.3, 0.4]     351  0.348259
+(0.4, 0.5]     373  0.453466
+(0.5, 0.6]     376  0.548610
+(0.6, 0.7]     404  0.650118
+(0.7, 0.8]     461  0.751005
+(0.8, 0.9]     506  0.852450
+(0.9, 1.0]     593  0.953377
 ```
 
-Existing direct model, full population (`n=6074`):
+Existing direct model, full population (`n=6074`, unchanged -- `backtest.py` was not
+touched by this fix wave):
 ```
                  n  mean_pit
 (-0.001, 0.1]  576  0.053340
@@ -823,8 +918,9 @@ Existing direct model, full population (`n=6074`):
 (0.9, 1.0]     683  0.953254
 ```
 
-Existing direct model, matched subset (`n=4275`, the trusted apples-to-apples
-comparison -- same `(player_id, date)` rows as the Monte Carlo composition table above):
+Existing direct model, matched subset (`n=4275`, byte-for-byte identical to the
+originally committed write-up -- confirms the direct-model side of this comparison is
+completely unaffected by this fix wave, as expected):
 ```
                  n  mean_pit
 (-0.001, 0.1]  412  0.049378
@@ -839,72 +935,88 @@ comparison -- same `(player_id, date)` rows as the Monte Carlo composition table
 (0.9, 1.0]     669  0.953359
 ```
 
-**Read honestly:** On the trusted, population-matched comparison (`n=4275` on both
-sides), the Monte Carlo composition does **not** beat the existing direct model on NLL --
-it loses badly. `mc_nll_model` (`1.8707843655646479`) is **worse** than
-`direct_matched_nll_model` (`1.250694422136362`) by `0.6200899434282858` nats, a
-`0.6200899434282858 / 1.250694422136362 = 0.49579652107913375` (49.6%) relative
-disadvantage for the composition -- an order of magnitude larger than any margin recorded
-elsewhere in this file (the largest prior loss, `Yards | Reception`'s
-`position_split_defense` ablation, was `-0.435%`). Worse still: the Monte Carlo
-composition does not even beat its **own** season-to-date baseline on its own
-population -- `mc_nll_model` (`1.8707843655646479`) is **worse** than `mc_nll_baseline`
-(`1.592887277155639`) by `0.27789708840900884` nats
-(`0.27789708840900884 / 1.592887277155639 = 0.17446123928194063`, 17.4% relative), the
-only model-vs-own-baseline comparison in this entire file that comes out negative -- every
-other first-validation entry above (`targets`, `team pass volume`, `CatchRate | Targets`,
-`Yards | Reception`) beats its own baseline. By contrast, the direct model's matched-subset
-result is a normal, real win over its own baseline: `direct_matched_nll_model`
-(`1.250694422136362`) beats `direct_matched_nll_baseline` (`1.403724673315056`) by
-`0.15303025117869384` nats (`10.9%` relative improvement), in line with this file's other
-established results. (Note: `mc_nll_baseline` and `direct_matched_nll_baseline` are
-**not** on the same baseline formula -- the Monte Carlo composition's baseline falls back
-to `yards_model`'s per-reception position intercepts, per `composition_backtest.py`'s own
-docstring, while the direct model's baseline falls back to `model.fit`'s own
-directly-fit `rec_yds` intercepts -- so only the `nll_model` column, not the
-`nll_baseline` column, is a valid head-to-head read between the two models, matching this
-file's own established caveat for the `snap_share` and `position_split_defense`
-ablations above.)
+Per-bin `mean_pit` values sit close to their bin's own target center for both models
+across every bucket (e.g. the `(0.4, 0.5]` bin: `0.453466` for the composition,
+`0.452047` for the direct matched subset, both near `0.45`). Bin **counts** skew toward
+the top decile for both (expected `427.5`/bin): the composition's `(0.9, 1.0]` bin holds
+`593`, `38.7%` above expected; the direct matched subset's `(0.9, 1.0]` bin holds `669`,
+`56.5%` above expected -- the direct model's raw bin-count skew is, if anything, larger.
+Calibration does not offer the composition a compensating advantage against its NLL
+loss, but it also does not make the direct model look cleanly better-calibrated either --
+same read as the original write-up, unaffected by this fix wave.
 
-Calibration does not rescue this result, and does not show a clean advantage for either
-side. Per-bin `mean_pit` values sit close to their bin's own target center for both
-models across every bucket (e.g. the `(0.4, 0.5]` bin: `0.452510` for the composition,
-`0.452047` for the direct matched subset, both near `0.45`) -- so neither model shows an
-obvious, gross PIT-centering failure. But bin **counts** (each of the 10 bins should hold
-`4275 / 10 = 427.5` rows if uniform) skew toward the top decile for both models: the
-composition's `(0.9, 1.0]` bin holds `593` rows, `38.7%` above the expected `427.5`
-(`(593 - 427.5) / 427.5 = 0.3871345029239766`), while its `(0.3, 0.4]` bin (the
-low-count outlier) holds `338`, `20.9%` below expected
-(`(338 - 427.5) / 427.5 = -0.20935672514619882`). The direct matched subset's skew is, if
-anything, slightly **larger**: its `(0.9, 1.0]` bin holds `669`, `56.5%` above expected
-(`(669 - 427.5) / 427.5 = 0.5649122807017544`), and its `(0.1, 0.2]` bin (its low-count
-outlier) holds `337`, `21.2%` below expected
-(`(337 - 427.5) / 427.5 = -0.21169590643274855`). Neither table is uniform, and the
-direct model's raw bin-count skew is not better than the composition's -- but this is not
-a redeeming factor for the composition: its catastrophic NLL loss is not explained away
-by a calibration advantage, since there isn't one. Both models show the same qualitative
-top-decile-heavy pattern in this window, and the direct model still wins decisively on
-NLL despite its own top-decile skew being larger in raw counts.
+**Confirmed, NOT-fixed structural limitations (documented here as open findings for a
+future plan, per the final whole-branch review's ruling -- both are real, both are too
+large in scope for this bounded fix wave):**
 
-Quoting the spec's own gate directly: "If Model 6 doesn't beat Model 5 ... it is not
-shipped." **This result fails that gate, plainly and by a wide margin.** The Monte Carlo
-composition loses to the existing direct model on NLL by a 49.6% relative margin (using
-the trusted, population-matched `n=4275` comparison, not the raw unequal-n numbers), and
-it does not offer a compensating calibration advantage to weigh against that loss --
-calibration is, if anything, comparably imperfect on both sides. This is a clear, honest
-loss, not a partial win or a close call: **Model 6 (this full Monte Carlo composition) is
-not shipped, per the spec's own literal gate.** The scale of this loss (49.6% relative
-NLL, and losing to its own trivial baseline by 17.4%) is different in kind from the
-point-estimate composition's earlier near-dead-heat result on MAE/RMSE -- point-estimate
-accuracy and full-distribution NLL are measuring different things, and this result shows
-the full Monte Carlo composition's moment-matched log-normal fit is a substantially worse
-probabilistic model of `receiving_yards` than the existing direct fit, not merely a
-smaller-margin loss on a stricter metric. This is real information this project's gate
-discipline requires acting on honestly: this composition does not ship, and the natural
-next step is investigating why the moment-matched fit underperforms so badly (e.g.
-whether the log-normal moment-match is a poor fit to the true MC sample shape, or whether
-compounding three separately-fit sub-models inflates variance) -- not scoped or attempted
-by this task.
+1. **Population-conditioning mismatch.** `composition.simulate_rec_yds()` draws Targets
+   unconditionally (correct, general-purpose semantics for "what if this player played
+   this game") -- but `composition_backtest.walk_forward()`'s scored population is
+   *implicitly* conditioned on the player having recorded `>= 1` target that specific
+   game, because a player-game only has a row in `game_ay` (and therefore a non-NaN
+   `trailing_air_yards`) if `targets_df` has at least one row for that `(player_id,
+   game_id)` (see the Population check above, and `composition_backtest.py`'s own
+   module docstring). This means part of the MC sample's zero mass corresponds to a
+   `targets == 0` outcome that is *structurally impossible* in the population actually
+   being scored -- every scored row is, by construction, a game where the player did
+   record at least one target. This inflates the zero-fraction (and therefore
+   destabilizes the moment-matched `sigma_hat`) beyond what the real, conditional
+   distribution would produce. Fixing this properly requires reworking how
+   `trailing_air_yards` is looked up so it does not require a same-game target row (e.g.
+   sourcing it from the player's most recent prior game instead of the current one) --
+   a genuine redesign of the leakage-safe feature-lookup path, out of scope for this
+   fix wave.
+2. **Zero-inflation / single-log-normal moment-matching mismatch.** A meaningful
+   fraction of any given player-game's Monte Carlo draws are exactly `0.0` (any draw
+   with zero catches gives `total_yards == 0.0` exactly), most severely for
+   near-zero-usage players (QBs in this window: see the position-split table above).
+   `_moment_match_lognormal()` fits ONE smooth log-normal to this mixture distribution
+   by taking the sample mean/std of `log(mc_sample + OFFSET)` -- a reasonable default,
+   but a poor fit specifically on the affected rows, where it can produce an
+   artificially tiny `sigma_hat` (see the QB rows above, `0.0136`-`0.0667`) that then
+   produces enormous NLL penalties on any row where the real outcome deviates even
+   slightly from the degenerate near-zero mode. A whole-branch review's own
+   investigation (prior to this fix wave) found that alternative scorings of the exact
+   same MC samples -- empirical CRPS and a mixed-measure log score with an explicit
+   atom at zero -- show the composition competitive-to-better against the direct model
+   (CRPS 12.8029 vs 12.8329, MC +0.23%; mixed-measure log score 1.0671 vs 1.2032, MC
+   +11.3%), supporting the reading that the single-log-normal NLL metric itself, not
+   necessarily the underlying composition, is the primary source of the catastrophic
+   QB-row failure mode. Properly fixing this would mean replacing the single-log-normal
+   moment-match with a real mixture-model likelihood (e.g. a point mass at zero plus a
+   log-normal for the nonzero component) -- a genuine methodology redesign, out of scope
+   for this fix wave.
+
+**Read honestly, per the spec's literal gate ("If Model 6 doesn't beat Model 5 ... it is
+not shipped"):** on the full, population-matched comparison (`n=4275` both sides), the
+Monte Carlo composition does **not** beat the existing direct model -- `mc_nll_model`
+(`2.2351073116720697`) is worse than `direct_matched_nll_model` (`1.250694422136362`) by
+`0.9844128895357076` nats (`78.7%` relative), and it is also worse than its own
+corrected, tighter baseline (`66.8%` relative, see above) -- both larger margins than the
+original (buggy-baseline, shared-seed) write-up reported, driven almost entirely by `11`
+QB rows (`0.26%` of the population, `56.4%` of the total NLL sum) whose failure mode is
+the documented, deliberately-not-fixed zero-inflation/moment-matching mismatch (and, per
+the investigation above, is itself unstable under seed decorrelation, which is why this
+number moved in the "wrong" direction after two real bug fixes). Excluding those 11 QB
+rows, the picture is materially different: the composition is a genuine, roughly
+half-a-percent dead heat with the direct model both ex-QB (MC `0.34%` better) and on
+WR-only, the spec's actual scoped market (MC `0.35%` worse) -- neither a win nor a loss
+large enough to mean anything against real Monte Carlo/refit noise. **A dead heat is not
+"beats Model 5."** Whether scored on the full population (a clear, large loss, now shown
+to be concentrated in a known, documented, not-yet-fixed QB failure mode) or on the
+spec's actual WR-scoped market (a dead heat, not a win), this result does not clear the
+spec's gate either way: **Model 6 (this full Monte Carlo composition) is not shipped**,
+per the spec's own literal language. This is a materially more honest and more useful
+picture than the original write-up's flat "loses badly, worse than its own baseline"
+framing -- the real story is "the composition is roughly competitive on its actual
+scoped market, but a small, structurally-understood QB sub-population, plus a known
+single-log-normal scoring mismatch on zero-inflated samples, currently make the full,
+unscoped comparison look far worse than that" -- not "the whole approach is a large,
+unqualified failure." Neither framing changes the shipping decision: this composition
+does not ship as-is. The natural next steps -- reworking the trailing_air_yards lookup to
+remove the population-conditioning mismatch, and/or replacing the single-log-normal
+moment-match with a real zero-inflated mixture likelihood -- are both real, scoped
+follow-up work, not attempted here.
 
 **Reproducing this result:**
 
@@ -949,6 +1061,28 @@ formulas on that subset:
 ```python
 mc_keys = mc_preds[['player_id', 'date']].drop_duplicates()
 matched = direct_preds.merge(mc_keys, on=['player_id', 'date'], how='inner')
+```
+
+The position-split, ex-QB, and WR-only breakdowns above are computed by adding a
+`position_group` groupby on `mc_preds` and the `matched` direct-model subset, using each
+module's own `_nll` formula (`composition_backtest._nll` / `backtest._nll`, same math)
+per position group and on the `!= 'QB'` / `== 'WR'` filtered subsets:
+
+```python
+def row_nll(y, mu, sigma, eps=composition_backtest.EPS):
+    sigma = np.maximum(sigma, eps)
+    return 0.5 * np.log(2 * np.pi * sigma ** 2) + (y - mu) ** 2 / (2 * sigma ** 2)
+
+mc_preds['row_nll'] = row_nll(mc_preds['y'].to_numpy(), mc_preds['model_mu'].to_numpy(), mc_preds['model_sigma'].to_numpy())
+matched['row_nll'] = row_nll(matched['y'].to_numpy(), matched['model_mu'].to_numpy(), matched['model_sigma'].to_numpy())
+
+position_split = mc_preds.groupby('position_group')['row_nll'].agg(['size', 'mean'])
+qb_frac_of_gap = mc_preds.loc[mc_preds['position_group'] == 'QB', 'row_nll'].sum() / mc_preds['row_nll'].sum()
+
+exqb_mc = mc_preds[mc_preds['position_group'] != 'QB']
+exqb_direct = matched[matched['position_group'] != 'QB']
+wr_mc = mc_preds[mc_preds['position_group'] == 'WR']
+wr_direct = matched[matched['position_group'] == 'WR']
 ```
 
 ## Reproducing this baseline
